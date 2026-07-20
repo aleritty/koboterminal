@@ -1,0 +1,20 @@
+option(
+  'kobo_target',
+  type: 'boolean',
+  value: false,
+  description: 'Build for Kobo target behavior toggles',
+)
+
+option(
+  'with_real_fbink',
+  type: 'boolean',
+  value: false,
+  description: 'Enable real FBInk integration code paths',
+)
+
+option(
+  'with_real_libtsm',
+  type: 'boolean',
+  value: false,
+  description: 'Enable real libtsm integration code paths',
+)
