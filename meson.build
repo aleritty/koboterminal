@@ -25,6 +25,38 @@ common_sources = files(
   'src/osk.c',
 )
 
+dependencies = []
+
+if with_real_fbink
+  fbink_inc = include_directories('third_party/FBInk', 'third_party/FBInk/cutef8', 'third_party/FBInk/libunibreak/src')
+  fbink_sources = files(
+    'third_party/FBInk/fbink.c',
+    'third_party/FBInk/cutef8/utf8.c',
+    'third_party/FBInk/cutef8/dfa.c',
+    'third_party/FBInk/libunibreak/src/unibreakbase.c',
+    'third_party/FBInk/libunibreak/src/unibreakdef.c',
+    'third_party/FBInk/libunibreak/src/eastasianwidthdef.c',
+    'third_party/FBInk/libunibreak/src/linebreakdata.c',
+    'third_party/FBInk/libunibreak/src/linebreakdef.c',
+    'third_party/FBInk/libunibreak/src/linebreak.c',
+  )
+  fbink_lib = static_library(
+    'fbink_minimal',
+    fbink_sources,
+    include_directories: fbink_inc,
+    c_args: [
+      '-DFBINK_FOR_LINUX',
+      '-DFBINK_MINIMAL',
+      '-DFBINK_WITH_DRAW',
+      '-DFBINK_WITH_OPENTYPE',
+    ],
+  )
+  dependencies += declare_dependency(
+    link_with: fbink_lib,
+    include_directories: fbink_inc,
+  )
+endif
+
 cargs = []
 if kobo_target
   cargs += ['-DKTERM_TARGET_KOBO=1']
@@ -45,6 +77,8 @@ executable(
   common_sources,
   include_directories: inc,
   c_args: cargs,
+  dependencies: dependencies,
+  link_args: ['-lutil', '-lm'],
   install: true,
 )
 

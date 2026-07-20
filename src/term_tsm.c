@@ -34,7 +34,10 @@ void kterm_term_feed(struct kterm_term *term, const char *buf, size_t len) {
 
         if (ch == '\n') {
             if (term->preview_len < (KTERM_TERM_PREVIEW_CAP - 1)) {
-                term->preview[term->preview_len++] = ' ';
+                term->preview[term->preview_len++] = '\n';
+            } else {
+                memmove(term->preview, term->preview + 1, KTERM_TERM_PREVIEW_CAP - 2);
+                term->preview[KTERM_TERM_PREVIEW_CAP - 2] = '\n';
             }
             continue;
         }
