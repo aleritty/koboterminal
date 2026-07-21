@@ -18,6 +18,36 @@ static FBInkOTConfig fbink_ot_cfg;
 static bool fbink_ready = false;
 static bool fbink_font_ready = false;
 static bool fbink_trace_frames = false;
+static char fbink_last_window[384];
+static bool fbink_has_drawn = false;
+
+static void kterm_renderer_show_startup_banner(void) {
+    FBInkConfig splash_cfg;
+    FBInkOTConfig splash_ot;
+
+    if (!fbink_ready) {
+        return;
+    }
+
+    splash_cfg = fbink_cfg;
+    splash_ot = fbink_ot_cfg;
+
+    splash_cfg.is_cleared = true;
+    splash_cfg.row = 0;
+    splash_cfg.col = 0;
+    splash_cfg.is_centered = false;
+    splash_cfg.no_refresh = false;
+
+    splash_ot.margins.top = 0;
+    splash_ot.margins.left = 0;
+    splash_ot.margins.right = 0;
+    splash_ot.margins.bottom = 0;
+    splash_ot.is_centered = true;
+    splash_ot.size_px = 24;
+
+    (void)fbink_cls(fbink_fbfd, &splash_cfg, NULL, false);
+    (void)fbink_print_ot(fbink_fbfd, "koboterminal", &splash_ot, &splash_cfg, NULL);
+}
 
 #define KTERM_WINDOW_INNER_WIDTH 38
 #define KTERM_WINDOW_OUTER_WIDTH (KTERM_WINDOW_INNER_WIDTH + 2)
@@ -269,6 +299,8 @@ int kterm_renderer_init(struct kterm_renderer *renderer, const struct kterm_conf
     fbink_font_ready = true;
 
     fbink_ready = true;
+    fbink_has_drawn = false;
+    kterm_renderer_show_startup_banner();
     fprintf(stderr, "KoboTerminal framebuffer renderer active\n");
 #else
     (void)cfg;
@@ -299,9 +331,17 @@ void kterm_renderer_draw(struct kterm_renderer *renderer, const struct kterm_ter
     }
 
     kterm_build_window(renderer->frame_index, term, preview, window, sizeof(window));
+
+    if (fbink_has_drawn && strcmp(window, fbink_last_window) == 0) {
+        return;
+    }
+
     fbink_cfg.is_cleared = true;
     fbink_ot_cfg.size_px = 24;
-    (void)fbink_print_ot(fbink_fbfd, window, &fbink_ot_cfg, &fbink_cfg, NULL);
+    if (fbink_print_ot(fbink_fbfd, window, &fbink_ot_cfg, &fbink_cfg, NULL) >= 0) {
+        snprintf(fbink_last_window, sizeof(fbink_last_window), "%s", window);
+        fbink_has_drawn = true;
+    }
 #else
     printf("[frame=%d cols=%d rows=%d bytes=%zu preview=\"%s\"]\n",
            renderer->frame_index,
@@ -327,5 +367,6 @@ void kterm_renderer_deinit(struct kterm_renderer *renderer) {
     }
 
     fbink_ready = false;
+    fbink_has_drawn = false;
 #endif
 }

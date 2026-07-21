@@ -11,7 +11,35 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <signal.h>
+#include <stdlib.h>
 #include <time.h>
+
+static volatile sig_atomic_t kterm_stop_requested = 0;
+
+static void kterm_handle_signal(int signo) {
+    (void)signo;
+    kterm_stop_requested = 1;
+}
+
+static void kterm_install_signal_handlers(void) {
+    struct sigaction sa;
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = kterm_handle_signal;
+    sigemptyset(&sa.sa_mask);
+
+    (void)sigaction(SIGINT, &sa, NULL);
+    (void)sigaction(SIGTERM, &sa, NULL);
+    (void)sigaction(SIGHUP, &sa, NULL);
+    (void)sigaction(SIGQUIT, &sa, NULL);
+}
+
+static void kterm_return_to_home(void) {
+#ifdef KTERM_TARGET_KOBO
+    (void)system("killall -CONT nickel >/dev/null 2>&1 || true");
+#endif
+}
 
 static void kterm_sleep_ms(long ms) {
     struct timespec ts;
@@ -29,17 +57,23 @@ int kterm_app_run(void) {
     struct kterm_osk osk;
     char rx[256];
     static const char *bootstrap_cmd = "printf 'koboterminal app loop online\\n'; uname -s; printf '\\n$ '";
+    int exit_code = 0;
+
+    kterm_stop_requested = 0;
+    kterm_install_signal_handlers();
 
     kterm_config_defaults(&cfg);
 
     if (kterm_pty_start(&pty, "/bin/sh") != 0) {
         fprintf(stderr, "PTY init failed\n");
+        kterm_return_to_home();
         return 1;
     }
 
     if (kterm_term_init(&term, cfg.cols, cfg.rows) != 0) {
         fprintf(stderr, "Terminal state init failed\n");
         kterm_pty_stop(&pty);
+        kterm_return_to_home();
         return 1;
     }
 
@@ -47,6 +81,7 @@ int kterm_app_run(void) {
         fprintf(stderr, "Renderer init failed\n");
         kterm_term_deinit(&term);
         kterm_pty_stop(&pty);
+        kterm_return_to_home();
         return 1;
     }
 
@@ -55,6 +90,7 @@ int kterm_app_run(void) {
         kterm_renderer_deinit(&renderer);
         kterm_term_deinit(&term);
         kterm_pty_stop(&pty);
+        kterm_return_to_home();
         return 1;
     }
 
@@ -63,10 +99,14 @@ int kterm_app_run(void) {
     (void)kterm_pty_write(&pty, "\n", 1);
 
     {
-        int tick;
-        for (tick = 0; tick < 64; ++tick) {
+        for (;;) {
             struct kterm_input_event ev;
             ssize_t nread;
+
+            if (kterm_stop_requested) {
+                exit_code = 1;
+                break;
+            }
 
             if (kterm_input_poll(&input, &ev) != 0) {
                 break;
@@ -85,12 +125,8 @@ int kterm_app_run(void) {
                 break;
             }
 
-            if (tick == 2 && kterm_osk_visible(&osk)) {
-                kterm_osk_toggle(&osk);
-            }
-
             kterm_renderer_draw(&renderer, &term);
-            kterm_sleep_ms(20);
+            kterm_sleep_ms(200);
         }
     }
 
@@ -99,5 +135,7 @@ int kterm_app_run(void) {
     kterm_term_deinit(&term);
     kterm_pty_stop(&pty);
 
-    return 0;
+    kterm_return_to_home();
+
+    return exit_code;
 }
