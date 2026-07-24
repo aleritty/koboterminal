@@ -45,6 +45,7 @@ if with_real_fbink
     fbink_sources,
     include_directories: fbink_inc,
     c_args: [
+      '-std=gnu11',
       '-DFBINK_FOR_LINUX',
       '-DFBINK_MINIMAL',
       '-DFBINK_WITH_DRAW',

@@ -1,75 +1,107 @@
+#define _GNU_SOURCE
 #include "kterm/term.h"
 
-#include <ctype.h>
+#include <tsm/libtsm.h>
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+/* Logging callback - silent */
+static void kterm_tsm_log(void *data, const char *file, int line, const char *func,
+                          const char *subs, unsigned int sev, const char *format, va_list args) {
+    /* Silent logging - uncomment for debugging */
+    (void)data;
+    (void)file;
+    (void)line;
+    (void)func;
+    (void)subs;
+    (void)sev;
+    (void)format;
+    (void)args;
+}
+
+/* VTE write callback - sends output from the terminal app to the PTY master */
+static void kterm_vte_write_cb(struct tsm_vte *vte, const char *u8, size_t len, void *data) {
+    (void)vte;
+    (void)u8;
+    (void)len;
+    (void)data;
+}
+
 int kterm_term_init(struct kterm_term *term, int cols, int rows) {
+    int rc;
+
+    if (!term) {
+        return -1;
+    }
+
+    memset(term, 0, sizeof(*term));
+    term->cols = cols;
+    term->rows = rows;
+    term->bytes_fed = 0;
+
+    /* Create the TSM screen */
+    rc = tsm_screen_new(&term->screen, kterm_tsm_log, NULL);
+    if (rc != 0) {
+        fprintf(stderr, "Failed to create TSM screen: %s\n", strerror(-rc));
+        return -1;
+    }
+
+    /* Resize the screen to the desired dimensions */
+    rc = tsm_screen_resize(term->screen, (unsigned int)cols, (unsigned int)rows);
+    if (rc != 0) {
+        fprintf(stderr, "Failed to resize TSM screen: %s\n", strerror(-rc));
+        tsm_screen_unref(term->screen);
+        term->screen = NULL;
+        return -1;
+    }
+
+    /* Create the TSM VTE (Virtual Terminal Emulator) */
+    rc = tsm_vte_new(&term->vte, term->screen, kterm_vte_write_cb, NULL,
+                     kterm_tsm_log, NULL);
+    if (rc != 0) {
+        fprintf(stderr, "Failed to create TSM VTE: %s\n", strerror(-rc));
+        tsm_screen_unref(term->screen);
+        term->screen = NULL;
+        return -1;
+    }
+
+    fprintf(stderr, "TSM terminal initialized: %dx%d\n", cols, rows);
+    return 0;
+}
+
+int kterm_term_feed(struct kterm_term *term, const char *buf, size_t len) {
+    if (!term || !buf || len == 0) {
+        return -1;
+    }
+
+    term->bytes_fed += len;
+
+    /* Feed the data to the VTE for parsing */
+    tsm_vte_input(term->vte, buf, len);
+
+    return 0;
+}
+
+int kterm_term_resize(struct kterm_term *term, int cols, int rows) {
+    int rc;
+
     if (!term) {
         return -1;
     }
 
     term->cols = cols;
     term->rows = rows;
-    term->bytes_fed = 0;
-    term->preview_len = 0;
-    term->preview[0] = '\0';
+
+    rc = tsm_screen_resize(term->screen, (unsigned int)cols, (unsigned int)rows);
+    if (rc != 0) {
+        fprintf(stderr, "Failed to resize TSM screen: %s\n", strerror(-rc));
+        return -1;
+    }
+
     return 0;
-}
-
-void kterm_term_feed(struct kterm_term *term, const char *buf, size_t len) {
-    size_t i;
-
-    if (!term || !buf || len == 0) {
-        return;
-    }
-
-    term->bytes_fed += len;
-
-    for (i = 0; i < len; ++i) {
-        char ch = buf[i];
-
-        if (ch == '\r') {
-            continue;
-        }
-
-        if (ch == '\n') {
-            if (term->preview_len < (KTERM_TERM_PREVIEW_CAP - 1)) {
-                term->preview[term->preview_len++] = '\n';
-            } else {
-                memmove(term->preview, term->preview + 1, KTERM_TERM_PREVIEW_CAP - 2);
-                term->preview[KTERM_TERM_PREVIEW_CAP - 2] = '\n';
-            }
-            continue;
-        }
-
-        if (isprint((unsigned char)ch)) {
-            if (term->preview_len < (KTERM_TERM_PREVIEW_CAP - 1)) {
-                term->preview[term->preview_len++] = ch;
-            } else {
-                memmove(term->preview, term->preview + 1, KTERM_TERM_PREVIEW_CAP - 2);
-                term->preview[KTERM_TERM_PREVIEW_CAP - 2] = ch;
-            }
-        }
-    }
-
-    term->preview[term->preview_len] = '\0';
-}
-
-void kterm_term_resize(struct kterm_term *term, int cols, int rows) {
-    if (!term) {
-        return;
-    }
-
-    term->cols = cols;
-    term->rows = rows;
-}
-
-const char *kterm_term_preview(const struct kterm_term *term) {
-    if (!term) {
-        return "";
-    }
-
-    return term->preview;
 }
 
 void kterm_term_deinit(struct kterm_term *term) {
@@ -77,5 +109,43 @@ void kterm_term_deinit(struct kterm_term *term) {
         return;
     }
 
+    if (term->vte) {
+        tsm_vte_unref(term->vte);
+        term->vte = NULL;
+    }
+
+    if (term->screen) {
+        tsm_screen_unref(term->screen);
+        term->screen = NULL;
+    }
+
     memset(term, 0, sizeof(*term));
+}
+
+int kterm_term_get_cols(const struct kterm_term *term) {
+    if (!term) {
+        return 0;
+    }
+    return term->cols;
+}
+
+int kterm_term_get_rows(const struct kterm_term *term) {
+    if (!term) {
+        return 0;
+    }
+    return term->rows;
+}
+
+struct tsm_screen *kterm_term_get_screen(struct kterm_term *term) {
+    if (!term) {
+        return NULL;
+    }
+    return term->screen;
+}
+
+struct tsm_vte *kterm_term_get_vte(struct kterm_term *term) {
+    if (!term) {
+        return NULL;
+    }
+    return term->vte;
 }

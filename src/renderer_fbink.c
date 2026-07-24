@@ -18,8 +18,13 @@ static FBInkOTConfig fbink_ot_cfg;
 static bool fbink_ready = false;
 static bool fbink_font_ready = false;
 static bool fbink_trace_frames = false;
-static char fbink_last_window[384];
+static char fbink_last_window[2048];
 static bool fbink_has_drawn = false;
+
+// Full-screen window dimensions (calculated from screen size)
+#define KTERM_SCREEN_COLS 38
+#define KTERM_SCREEN_ROWS 34
+#define KTERM_WINDOW_CAP (KTERM_SCREEN_ROWS * (KTERM_SCREEN_COLS + 3) + 64)
 
 static void kterm_renderer_show_startup_banner(void) {
     FBInkConfig splash_cfg;
@@ -49,7 +54,7 @@ static void kterm_renderer_show_startup_banner(void) {
     (void)fbink_print_ot(fbink_fbfd, "koboterminal", &splash_ot, &splash_cfg, NULL);
 }
 
-#define KTERM_WINDOW_INNER_WIDTH 38
+#define KTERM_WINDOW_INNER_WIDTH KTERM_SCREEN_COLS
 #define KTERM_WINDOW_OUTER_WIDTH (KTERM_WINDOW_INNER_WIDTH + 2)
 
 static void kterm_append(char *buffer, size_t cap, size_t *used, const char *text) {
@@ -164,12 +169,14 @@ static void kterm_append_window_line(char *buffer, size_t cap, size_t *used, con
 }
 
 static void kterm_build_window(int frame_index, const struct kterm_term *term, const char *preview, char *output, size_t cap) {
-    char clean_preview[96];
+    char clean_preview[512];
     char title_line[64];
     char frame_line[64];
     size_t used = 0;
     const char *line_start;
     const char *line_end;
+    int rows_to_fill;
+    int i;
 
     if (!output || cap == 0) {
         return;
@@ -225,6 +232,12 @@ static void kterm_build_window(int frame_index, const struct kterm_term *term, c
         }
     }
 
+    // Fill remaining rows with blank lines to cover the full screen
+    rows_to_fill = KTERM_SCREEN_ROWS - 4; // 4 rows already used (border, title, border, frame)
+    for (i = 0; i < rows_to_fill && used + KTERM_WINDOW_OUTER_WIDTH + 2 < cap; ++i) {
+        kterm_append_window_line(output, cap, &used, "");
+    }
+
     kterm_append_border(output, cap, &used, '+', '-', '+');
 }
 #endif
@@ -244,10 +257,11 @@ int kterm_renderer_init(struct kterm_renderer *renderer, const struct kterm_conf
     fbink_cfg.is_cleared = true;
     fbink_cfg.row = 0;
     fbink_cfg.col = 0;
-    fbink_cfg.is_centered = false;
+    fbink_cfg.is_centered = true;    // Center horizontally
+    fbink_cfg.is_halfway = true;     // Center vertically
     fbink_cfg.is_padded = false;
     fbink_cfg.is_rpadded = false;
-    fbink_cfg.is_overlay = false;
+    fbink_cfg.is_overlay = true;     // Overlay on top of nickel interface
     fbink_cfg.is_bgless = false;
     fbink_cfg.is_fgless = false;
     fbink_cfg.no_refresh = false;
@@ -300,7 +314,17 @@ int kterm_renderer_init(struct kterm_renderer *renderer, const struct kterm_conf
 
     fbink_ready = true;
     fbink_has_drawn = false;
+
+    // Blank the screen (clear to black)
+    fbink_cfg.is_cleared = true;
+    fbink_cfg.is_bgless = false;
+    fbink_cfg.fg_color = FG_GRAY2;
+    fbink_cfg.bg_color = BG_BLACK;
+    (void)fbink_cls(fbink_fbfd, &fbink_cfg, NULL, false);
+
+    // Show startup banner
     kterm_renderer_show_startup_banner();
+
     fprintf(stderr, "KoboTerminal framebuffer renderer active\n");
 #else
     (void)cfg;
@@ -311,7 +335,7 @@ int kterm_renderer_init(struct kterm_renderer *renderer, const struct kterm_conf
 
 void kterm_renderer_draw(struct kterm_renderer *renderer, const struct kterm_term *term) {
     const char *preview = kterm_term_preview(term);
-    char window[384];
+    char window[KTERM_WINDOW_CAP];
 
     renderer->frame_index += 1;
 
