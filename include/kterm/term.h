@@ -33,4 +33,20 @@ struct tsm_screen *kterm_term_get_screen(struct kterm_term *term);
 /* Get the tsm_vte pointer for feeding input */
 struct tsm_vte *kterm_term_get_vte(struct kterm_term *term);
 
+/*
+ * Serialize the terminal screen to plain text.
+ * Used by the NickelHook UI to update the dialog body.
+ *
+ * Parameters:
+ *   - scrollback: raw PTY output buffer (for reference)
+ *   - scrollback_len: length of scrollback buffer
+ *   - output: buffer to write serialized text to
+ *   - out_cap: capacity of output buffer
+ *
+ * Returns:
+ *   - Number of bytes written to output
+ *   - -1 on error
+ */
+int kterm_term_serialize(const char *scrollback, size_t scrollback_len, char *output, size_t out_cap);
+
 #endif

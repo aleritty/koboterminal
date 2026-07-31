@@ -10,11 +10,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     xz-utils \
     build-essential \
-    meson \
     ninja-build \
     pkg-config \
     libi2c-dev \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+# Upgrade meson to a recent version (1.11+) for subproject support
+RUN pip3 install meson --break-system-packages
 
 WORKDIR /opt
 

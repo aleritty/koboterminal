@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 #include "kterm/term.h"
 
-#include <tsm/libtsm.h>
+#include <libtsm.h>
 
 #include <errno.h>
 #include <stdio.h>

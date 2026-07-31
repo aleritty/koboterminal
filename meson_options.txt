@@ -1,20 +1,6 @@
 option(
-  'kobo_target',
+  'with_nickelhook',
   type: 'boolean',
   value: false,
-  description: 'Build for Kobo target behavior toggles',
-)
-
-option(
-  'with_real_fbink',
-  type: 'boolean',
-  value: false,
-  description: 'Enable real FBInk integration code paths',
-)
-
-option(
-  'with_real_libtsm',
-  type: 'boolean',
-  value: false,
-  description: 'Enable real libtsm integration code paths',
+  description: 'Build as NickelHook shared library (.so) for LD_PRELOAD into Nickel',
 )

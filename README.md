@@ -1,87 +1,312 @@
 # KoboTerminal
 
-KoboTerminal is a framebuffer terminal emulator for Kobo devices.
+A terminal emulator for Kobo e-reader devices, integrated with Nickel via `LD_PRELOAD` injection. Adds a native "Terminal" action to the NickelMenu, launching a full PTY shell inside a Qt dialog.
 
-Project goals:
-- Full-screen terminal experience on Kobo Libra Colour
-- VT parsing and terminal state with libtsm
-- Rendering through FBInk
-- Touch input and in-app on-screen keyboard
-- Launch from NickelMenu
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Build](https://github.com/aleritty/koboterminal/actions/workflows/build.yml/badge.svg)](https://github.com/aleritty/koboterminal/actions/workflows/build.yml)
 
-## Current state
+---
 
-This repository currently contains a buildable implementation scaffold:
-- Module boundaries for PTY, terminal parser, renderer, input, and OSK
-- Host-build stubs to validate architecture early
-- Cross-build templates for Kobo toolchains
-- Packaging scripts for NickelMenu deployment
+## Table of Contents
 
-Recent implementation progress:
-- PTY backend now uses a real `forkpty` shell process on host builds.
-- The app loop writes bootstrap commands to the shell and reads back real output.
-- Terminal state keeps a rolling printable preview for renderer diagnostics.
+- [KoboTerminal](#koboterminal)
+  - [Table of Contents](#table-of-contents)
+  - [✨ Features](#-features)
+  - [🏗️ Architecture](#️-architecture)
+  - [🚀 Quick Start](#-quick-start)
+    - [Install on Kobo](#install-on-kobo)
+      - [1. Bootstrap](#1-bootstrap)
+      - [2. Build and package](#2-build-and-package)
+      - [3. Deploy to Kobo](#3-deploy-to-kobo)
+      - [4. Restart Nickel](#4-restart-nickel)
+    - [Launch](#launch)
+    - [Uninstall](#uninstall)
+  - [🛠️ Development](#️-development)
+    - [Prerequisites](#prerequisites)
+    - [Build](#build)
+      - [Host build (for testing/debugging)](#host-build-for-testingdebugging)
+      - [Kobo cross-build](#kobo-cross-build)
+      - [Full project build (standalone Kobo target)](#full-project-build-standalone-kobo-target)
+    - [Project Structure](#project-structure)
+  - [📖 Usage](#-usage)
+    - [NickelMenu Trigger](#nickelmenu-trigger)
+    - [PTY Commands](#pty-commands)
+  - [📦 Packaging](#-packaging)
+  - [🔧 Troubleshooting](#-troubleshooting)
+    - [Terminal doesn't appear in NickelMenu](#terminal-doesnt-appear-in-nickelmenu)
+    - [Build fails](#build-fails)
+    - [Dialog crashes on show](#dialog-crashes-on-show)
+  - [📄 License](#-license)
+  - [🙏 Acknowledgements](#-acknowledgements)
 
-## Planned external dependencies
+---
 
-- FBInk (GPLv3+)
-- libtsm (LGPL-2.1)
+## ✨ Features
 
-The third-party sources are vendored under third_party/. See third_party/README.md.
+- **NickelMenu Integration** — Adds a "Terminal" action to the NickelMenu via `LD_PRELOAD` injection
+- **Full PTY Shell** — Runs a real shell process with full terminal emulation
+- **VT Escape Sequences** — Parses ANSI/VT100 escape sequences via vendored `libtsm`
+- **Native Qt Dialog** — Uses Nickel's `ConfirmationDialog` for a seamless look and feel
+- **Touch Input** — Captures user input through Nickel's `TouchLineEdit` widget
+- **Non-blocking** — Dialog shows without blocking Nickel's event loop
 
-## Build on host
+---
 
-Requirements:
-- Meson
-- Ninja
-- C compiler with C11 support
+## 🏗️ Architecture
 
-Build:
+```bash
+┌──────────────────────────────────────────────────────────────┐
+│                        Nickel (Kobo UI)                      │
+│  ┌─────────────────────────────────────────────────────────┐ │
+│  │  LD_PRELOAD: libkoboterminal.so                         │ │
+│  │                                                         │ │
+│  │  ┌───────────────────────────────────────────────────┐  │ │
+│  │  │  nickelhook.c        — Library entry point        │  │ │
+│  │  │                      — Symbol resolution          │  │ │
+│  │  │                      — NickelMenu action reg.     │  │ │
+│  │  └───────────────────────────────────────────────────┘  │ │
+│  │                                                         │ │
+│  │  ┌───────────────────────────────────────────────────┐  │ │
+│  │  │  ui_dialog.c           — Dialog lifecycle         │  │ │
+│  │  │  ui_input.c            — Input field management   │  │ │
+│  │  │  ui_signals.c          — Qt signal/slot wiring    │  │ │
+│  │  └───────────────────────────────────────────────────┘  │ │
+│  │                                                         │ │
+│  │  ┌───────────────────────────────────────────────────┐  │ │
+│  │  │  pty_qt.c              — PTY management           │  │ │
+│  │  │  term_tsm.c            — VT escape parser         │  │ │
+│  │  │  term_serialize.c      — Screen → plain text      │  │ │
+│  │  └───────────────────────────────────────────────────┘  │ │
+│  └─────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────┘
+```
 
-meson setup build-host -Dkobo_target=false
-meson compile -C build-host
-./build-host/koboterminal
+**Key Components:**
 
-## Configure Kobo cross-build
+| File | Purpose |
+| ---- | ------- |
+| `src/nickelhook.c` | Library entry point, Nickel symbol resolution, NickelMenu action registration |
+| `src/app.c` | Application lifecycle, signal handling, NickelMenu trigger callback |
+| `src/ui_dialog.c` | `ConfirmationDialog` lifecycle management |
+| `src/ui_input.c` | `TouchLineEdit` input field management |
+| `src/ui_signals.c` | Qt signal/slot connections |
+| `src/pty_qt.c` | PTY creation, read/write, Qt integration |
+| `src/term_tsm.c` | VT escape sequence parser (via `libtsm`) |
+| `src/term_serialize.c` | TSM screen buffer → plain text conversion |
+| `src/main.c` | Standalone host-mode entry point |
 
-For a fresh checkout, bootstrap the vendored third-party sources, the Kobo toolchain image, and the build directories with:
+---
 
+## 🚀 Quick Start
+
+### Install on Kobo
+
+#### 1. Bootstrap
+
+```bash
+# Initialize submodules and build toolchain (first time only)
 scripts/bootstrap.sh
+```
 
-1. Build the Kobo toolchain container:
+#### 2. Build and package
 
+```bash
+# Build, package, and clean up in one step
+scripts/build-nickelhook.sh
+```
+
+This produces `koboterminal-install.tgz` containing the library, activation script, and README.
+
+#### 3. Deploy to Kobo
+
+```bash
+scp koboterminal-install.tgz root@<KOBO_IP>:/tmp/
+ssh root@<KOBO_IP> 'cd /tmp && tar xzf koboterminal-install.tgz'
+```
+
+#### 4. Restart Nickel
+
+Go to **Settings → Quit** to restart Nickel, or reboot the device.
+
+### Launch
+
+Once activated:
+
+1. Tap the screen to bring up the **NickelMenu**
+2. Select **Terminal** from the menu
+3. The terminal dialog opens with a PTY shell
+4. Type commands in the input field at the bottom
+5. Press **OK** to execute, **Cancel** or **X** to close
+
+### Uninstall
+
+**Automated (via SSH):**
+
+```bash
+scripts/uninstall-nickelhook.sh
+```
+
+**Manual:**
+
+```bash
+# On the Kobo device
+rm /mnt/onboard/.adds/koboterminal/libkoboterminal.so
+rmdir /mnt/onboard/.adds/koboterminal 2>/dev/null || true
+```
+
+Then restart Nickel.
+
+---
+
+## 🛠️ Development
+
+### Prerequisites
+
+| Requirement | Version | Notes |
+| ----------- | ------- | ----- |
+| Docker | Any recent version | For cross-compilation |
+| Meson | ≥ 1.1 | Build system |
+| Ninja | Any | Build backend |
+| GCC | ≥ 14 (target) | ARM cross-compiler (provided by Docker image) |
+| Host C compiler | Any with C11 support | For host-mode builds |
+
+### Build
+
+#### Host build (for testing/debugging)
+
+```bash
+meson setup build-host -Dwith_nickelhook=true
+meson compile -C build-host
+```
+
+#### Kobo cross-build
+
+```bash
+# Bootstrap toolchain (first time only)
 docker build -t koboterminal-kobo-toolchain -f docker/kobo-toolchain/Dockerfile .
 
-2. Build the Kobo binary inside that container:
+# Build
+scripts/build-nickelhook.sh
+```
 
+#### Full project build (standalone Kobo target)
+
+```bash
 scripts/build-kobo.sh
+```
 
-You can override the image with `IMAGE` if you want to use a different local container tag.
+This builds the standalone `koboterminal` binary with FBInk framebuffer rendering.
 
-`scripts/build-kobo.sh` also packages the Kobo payload into `dist/koboterminal` and removes the build directory when it finishes.
+### Project Structure
 
-## Packaging for NickelMenu
+```bash
+├── src/                    # Source files
+├── include/kterm/          # Public headers
+├── toolchains/             # Cross-compilation toolchain config
+├── docker/                 # Docker crossbuild toolchain
+├── scripts/                # Build & install scripts
+│   ├── build.sh            # Build the library
+│   ├── sync.sh             # Sync the library to kobo
+│   ├── bootstrap.sh        # setup the repository for the first build
+├── meson.build             # Meson build definition
+├── meson_options.txt       # Build options
+└── README.md               # This file
+```
 
-Run the full Kobo build and packaging flow with:
+---
 
-scripts/build-kobo.sh
+## 📖 Usage
 
-That leaves the packaged tree in `dist/koboterminal` and removes the build directory.
+### NickelMenu Trigger
 
-To sync directly to a Kobo over SSH, use:
+The terminal is triggered from the NickelMenu:
 
-scripts/sync-kobo.sh
+```bash
+NickelMenu → Terminal → [PTY Shell Opens]
+```
 
-That script only asks for the Kobo IP address and uses OpenSSH's askpass path with an empty password, then streams the already packaged `dist/koboterminal/.adds/koboterminal` tree over `tar`.
+The dialog is non-blocking — Nickel continues its event loop while the terminal is active.
 
-If you want to package manually, `scripts/package-kobo.sh <path-to-binary>` still works as a helper.
+### PTY Commands
 
-This creates a Kobo USB package tree under dist/koboterminal that you can copy to the device storage root.
+Once the terminal is open, you can run any shell command:
 
-Add it to your nickelmenu like this:
-menu_item :main    :KoboTerminal      :cmd_spawn    :quiet:exec /mnt/onboard/.adds/koboterminal/koboterminal.sh
+```bash
+ls -la
+cat /proc/version
+top
+vi
+nano
+```
 
-## Keyboard note
+Standard VT100 escape sequences are supported for terminal rendering.
 
-Standalone framebuffer apps generally cannot directly invoke Nickel's system keyboard API.
-This project therefore implements an in-app virtual keyboard path as the practical default.
+---
+
+## 📦 Packaging
+
+The `scripts/build-nickelhook.sh` script automatically creates `koboterminal-install.tgz` after building.
+
+Deploy to Kobo:
+
+```bash
+scp koboterminal-install.tgz root@<KOBO_IP>:/tmp/
+ssh root@<KOBO_IP> 'cd /tmp && tar xzf koboterminal-install.tgz'
+```
+
+For uninstallation, use the `packaging/uninstall.sh` script on the Kobo device.
+
+---
+
+## 🔧 Troubleshooting
+
+### Terminal doesn't appear in NickelMenu
+
+1. Verify the library is installed:
+
+   ```bash
+   ls -la /mnt/onboard/.adds/koboterminal/libkoboterminal.so
+   ```
+
+2. Restart Nickel after making changes.
+
+### Build fails
+
+1. Ensure Docker image is up to date:
+
+   ```bash
+   docker build -t koboterminal-kobo-toolchain -f docker/kobo-toolchain/Dockerfile .
+   ```
+
+2. Check Meson version:
+
+   ```bash
+   meson --version  # Should be ≥ 1.1
+   ```
+
+### Dialog crashes on show
+
+1. Verify the library is installed on the Kobo:
+
+   ```bash
+   ls -la /mnt/onboard/.adds/koboterminal/libkoboterminal.so
+   ```
+
+2. Check Nickel logs:
+
+   ```bash
+   log_view /var/log/nickel.log
+   ```
+
+---
+
+## 📄 License
+
+This project is released under the [MIT License](LICENSE).
+
+---
+
+## 🙏 Acknowledgements
+
+- [NickelHook](https://github.com/pgaskin/NickelHook) — LD_PRELOAD injection framework for Nickel
+- [libtsm](https://github.com/cedo00/libtsm) — Terminal State Machine library
