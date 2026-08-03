@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ninja-build \
     pkg-config \
+    qtbase5-dev \
+    qttools5-dev-tools \
     libi2c-dev \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*

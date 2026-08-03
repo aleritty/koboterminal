@@ -17,42 +17,156 @@
 #include "kterm/nickelhook.h"
 
 #include <dlfcn.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <time.h>
 #include <stdarg.h>
+#include <errno.h>
 
 /* ============================================================================
  * Logging
  * ============================================================================ */
 
-#define LOG_PATH "/tmp/koboterminal.log"
+#define KTERM_LOG_PATH "/mnt/onboard/.adds/koboterminal/lkoboterminal.log"
+#define KTERM_LOG_CONF_PATH "/mnt/onboard/.adds/koboterminal/koboterminal.conf"
 
-void kterm_log(const char *fmt, ...) {
-    va_list args;
+typedef enum {
+    KTERM_LOG_LEVEL_INFO = 0,
+    KTERM_LOG_LEVEL_ERROR = 1,
+} kterm_log_level_t;
+
+static int kterm_parse_bool_value(const char *s) {
+    if (!s) {
+        return 0;
+    }
+
+    while (*s && isspace((unsigned char)*s)) {
+        ++s;
+    }
+
+    if (!*s) {
+        return 0;
+    }
+
+    if (*s == '1') {
+        return 1;
+    }
+
+    if (*s == '0') {
+        return 0;
+    }
+
+    if (strncasecmp(s, "true", 4) == 0 || strncasecmp(s, "yes", 3) == 0 || strncasecmp(s, "on", 2) == 0) {
+        return 1;
+    }
+
+    return 0;
+}
+
+static int kterm_log_is_verbose_enabled(void) {
+    FILE *f = fopen(KTERM_LOG_CONF_PATH, "r");
+    char line[256];
+
+    if (!f) {
+        return 0;
+    }
+
+    while (fgets(line, sizeof(line), f)) {
+        char *s = line;
+        char *key;
+        char *value;
+
+        while (*s && isspace((unsigned char)*s)) {
+            ++s;
+        }
+        if (!*s || *s == '#') {
+            continue;
+        }
+
+        key = s;
+        value = strchr(s, '=');
+        if (!value) {
+            if (kterm_parse_bool_value(key)) {
+                fclose(f);
+                return 1;
+            }
+            continue;
+        }
+
+        *value++ = '\0';
+
+        /* Trim key trailing whitespace */
+        {
+            char *end = key + strlen(key);
+            while (end > key && isspace((unsigned char)end[-1])) {
+                *--end = '\0';
+            }
+        }
+
+        if (strcmp(key, "verbose") == 0 || strcmp(key, "debug") == 0) {
+            int enabled = kterm_parse_bool_value(value);
+            fclose(f);
+            return enabled;
+        }
+    }
+
+    fclose(f);
+    return 0;
+}
+
+static void kterm_log_v(kterm_log_level_t level, const char *fmt, va_list args) {
     FILE *f;
     time_t now = time(NULL);
     struct tm *tm_info = localtime(&now);
     char timebuf[64];
+    const char *level_str = level == KTERM_LOG_LEVEL_ERROR ? "ERROR" : "INFO";
 
-    va_start(args, fmt);
-
-    f = fopen(LOG_PATH, "a");
-    if (!f) {
-        /* Fallback to stderr if file can't be opened */
-        vfprintf(stderr, fmt, args);
-        va_end(args);
+    if (level == KTERM_LOG_LEVEL_INFO && !kterm_log_is_verbose_enabled()) {
         return;
     }
 
-    strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", tm_info);
-    fprintf(f, "[%s] ", timebuf);
+    f = fopen(KTERM_LOG_PATH, "a");
+    if (!f) {
+        if (level == KTERM_LOG_LEVEL_ERROR) {
+            fprintf(stderr, "[koboterminal] log open failed (%s): %s\n", KTERM_LOG_PATH, strerror(errno));
+            vfprintf(stderr, fmt, args);
+        }
+        return;
+    }
+
+    if (tm_info) {
+        strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", tm_info);
+    } else {
+        snprintf(timebuf, sizeof(timebuf), "time-unavailable");
+    }
+
+    fprintf(f, "[%s] [%s] ", timebuf, level_str);
     vfprintf(f, fmt, args);
     fflush(f);
     fclose(f);
+}
 
+void kterm_log_info(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    kterm_log_v(KTERM_LOG_LEVEL_INFO, fmt, args);
+    va_end(args);
+}
+
+void kterm_log_error(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    kterm_log_v(KTERM_LOG_LEVEL_ERROR, fmt, args);
+    va_end(args);
+}
+
+void kterm_log(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    kterm_log_v(KTERM_LOG_LEVEL_INFO, fmt, args);
     va_end(args);
 }
 
@@ -91,13 +205,29 @@ N3ConfirmationTextEditField *kterm_input_field = NULL;
 /* Whether the terminal dialog is currently visible */
 int kterm_dialog_visible = 0;
 
+static ConfirmationDialog__close_t kterm_original_ConfirmationDialog_close = NULL;
+
+typedef enum {
+    KTERM_NM_ACTION_RESULT_TYPE_SILENT = 0,
+} kterm_nm_action_result_type_t;
+
+typedef struct kterm_nm_action_result {
+    kterm_nm_action_result_type_t type;
+    char *msg;
+    int skip;
+} kterm_nm_action_result_t;
+
+typedef kterm_nm_action_result_t *(*kterm_nm_action_cmd_output_t)(const char *arg);
+typedef kterm_nm_action_result_t *(*kterm_nm_action_result_silent_t)(void);
+
+static kterm_nm_action_cmd_output_t kterm_original_nm_action_cmd_output = NULL;
+static kterm_nm_action_result_silent_t kterm_nm_action_result_silent = NULL;
+
 /* PTY and terminal state (forward declarations, defined in pty_qt.c and term_tsm.c) */
 extern int kterm_pty_qt_init(void);
 extern void kterm_pty_qt_deinit(void);
 extern int kterm_pty_qt_write(const char *text, size_t len);
 extern int kterm_pty_qt_is_running(void);
-extern void kterm_term_serialize(const char *buf, size_t len, char *output, size_t out_cap);
-extern void kterm_term_deinit(void);
 
 /* ============================================================================
  * nh_info: Module metadata
@@ -130,8 +260,185 @@ static struct nh_info kterm_nh_info = {
  */
 
 static struct nh_hook kterm_nh_hook[] = {
+    {
+        .sym = "nm_action_cmd_output",
+        .sym_new = "kterm_nm_action_cmd_output",
+        .lib = "libnm.so",
+        .out = nh_symoutptr(kterm_original_nm_action_cmd_output),
+        .desc = "Intercept NickelMenu cmd_output for KoboTerminal",
+        .optional = true,
+    },
+    {
+        .sym = "nm_action_cmd_output",
+        .sym_new = "kterm_nm_action_cmd_output",
+        .lib = "/usr/local/Kobo/libnm.so",
+        .out = nh_symoutptr(kterm_original_nm_action_cmd_output),
+        .desc = "Intercept NickelMenu cmd_output (/usr/local/Kobo/libnm.so)",
+        .optional = true,
+    },
+    {
+        .sym = "nm_action_cmd_output",
+        .sym_new = "kterm_nm_action_cmd_output",
+        .lib = "libnm.so.1",
+        .out = nh_symoutptr(kterm_original_nm_action_cmd_output),
+        .desc = "Intercept NickelMenu cmd_output (libnm.so.1)",
+        .optional = true,
+    },
+    {
+        .sym = "_ZN18ConfirmationDialog5closeEv",
+        .sym_new = "kterm_ConfirmationDialog_close",
+        .lib = "libnickel.so.1.0.0",
+        .out = nh_symoutptr(kterm_original_ConfirmationDialog_close),
+        .desc = "Hook ConfirmationDialog::close to cleanup PTY",
+        .optional = true,
+    },
     {0},  /* NULL terminator */
 };
+
+void kterm_ConfirmationDialog_close(ConfirmationDialog *dlg) {
+    kterm_log_info("[koboterminal] Intercepted ConfirmationDialog::close\n");
+    if (dlg == kterm_dialog) {
+        kterm_log_info("[koboterminal] Terminal dialog closing, deinitializing PTY\n");
+        kterm_pty_qt_deinit();
+        kterm_nhook_dialog_reset();
+    }
+
+    if (kterm_original_ConfirmationDialog_close) {
+        kterm_original_ConfirmationDialog_close(dlg);
+    }
+}
+
+static char *kterm_trim(char *s) {
+    char *end;
+
+    while (*s && isspace((unsigned char)*s)) {
+        ++s;
+    }
+
+    end = s + strlen(s);
+    while (end > s && isspace((unsigned char)end[-1])) {
+        *--end = '\0';
+    }
+
+    return s;
+}
+
+static const char *kterm_cmd_output_command(char *arg) {
+    char *cmd = arg;
+    char *timeout_s = kterm_trim(strsep(&cmd, ":"));
+    char *end = NULL;
+    long timeout;
+    char *raw_cmd;
+    char *option;
+
+    if (!cmd) {
+        return NULL;
+    }
+
+    timeout = strtol(timeout_s, &end, 10);
+    if (!timeout_s[0] || (end && *end) || timeout <= 0 || timeout >= 10000) {
+        return NULL;
+    }
+
+    raw_cmd = kterm_trim(cmd);
+    if (!raw_cmd[0]) {
+        return NULL;
+    }
+
+    cmd = raw_cmd;
+    option = kterm_trim(strsep(&cmd, ":"));
+    if (cmd && !strcmp(option, "quiet")) {
+        return kterm_trim(cmd);
+    }
+
+    return raw_cmd;
+}
+
+static kterm_nm_action_result_t *kterm_nm_silent_result(void) {
+    if (!kterm_nm_action_result_silent) {
+        *(void **)(&kterm_nm_action_result_silent) = dlsym(RTLD_DEFAULT, "nm_action_result_silent");
+    }
+
+    if (kterm_nm_action_result_silent) {
+        return kterm_nm_action_result_silent();
+    }
+
+    kterm_nm_action_result_t *res = calloc(1, sizeof(*res));
+    if (!res) {
+        return NULL;
+    }
+
+    res->type = KTERM_NM_ACTION_RESULT_TYPE_SILENT;
+    return res;
+}
+
+static bool kterm_handle_nm_command(const char *command) {
+    const char *action;
+
+    if (!command || strncmp(command, "koboterminal:", 13) != 0) {
+        return false;
+    }
+
+    action = command + 13;
+    if (!strcmp(action, "open")) {
+        kterm_log_info("[koboterminal] Handling NickelMenu open action\n");
+        return kterm_nhook_dialog_show() == 0;
+    }
+
+    if (strncmp(action, "cmd:", 4) == 0) {
+        const char *pty_command = action + 4;
+
+        while (*pty_command && isspace((unsigned char)*pty_command)) {
+            ++pty_command;
+        }
+
+        if (!*pty_command) {
+            return true;
+        }
+
+        if (!kterm_pty_qt_is_running() && kterm_nhook_dialog_show() != 0) {
+            return false;
+        }
+
+        if (kterm_pty_qt_write(pty_command, strlen(pty_command)) < 0) {
+            kterm_log_error("[koboterminal] Failed to write PTY command\n");
+            return false;
+        }
+
+        (void)kterm_pty_qt_write("\n", 1);
+        kterm_log_info("[koboterminal] Sent PTY command: %s\n", pty_command);
+        return true;
+    }
+
+    kterm_log_error("[koboterminal] Unknown NickelMenu action: %s\n", action);
+    return false;
+}
+
+__attribute__((visibility("default")))
+kterm_nm_action_result_t *kterm_nm_action_cmd_output(const char *arg) {
+    char *tmp;
+    const char *command;
+    bool handled;
+
+    if (!arg || !kterm_original_nm_action_cmd_output) {
+        return NULL;
+    }
+
+    tmp = strdup(arg);
+    if (!tmp) {
+        return kterm_original_nm_action_cmd_output(arg);
+    }
+
+    command = kterm_cmd_output_command(tmp);
+    handled = kterm_handle_nm_command(command);
+    free(tmp);
+
+    if (handled) {
+        return kterm_nm_silent_result();
+    }
+
+    return kterm_original_nm_action_cmd_output(arg);
+}
 
 /* ============================================================================
  * nh_dlsym: Symbol resolution for Nickel C++ methods
@@ -257,12 +564,12 @@ static int kterm_nh_init(void) {
     int resolved = 0;
     int failed = 0;
 
-    kterm_log("[koboterminal] Module loading...\n");
+    kterm_log_info("[koboterminal] Module loading...\n");
 
     /* Open libnickel.so.1.0.0 for symbol resolution */
     handle = dlopen("libnickel.so.1.0.0", RTLD_NOW);
     if (!handle) {
-        kterm_log("[koboterminal] Failed to open libnickel.so.1.0.0: %s\n", dlerror());
+        kterm_log_error("[koboterminal] Failed to open libnickel.so.1.0.0: %s\n", dlerror());
         return -1;
     }
 
@@ -270,7 +577,7 @@ static int kterm_nh_init(void) {
     for (sym = kterm_nh_dlsym; sym->name; ++sym) {
         void *ptr = dlsym(handle, sym->name);
         if (!ptr) {
-            kterm_log("[koboterminal] Failed to resolve symbol '%s': %s\n",
+            kterm_log_error("[koboterminal] Failed to resolve symbol '%s': %s\n",
                     sym->name,
                     dlerror());
             if (!sym->optional) {
@@ -284,7 +591,7 @@ static int kterm_nh_init(void) {
 
     dlclose(handle);
 
-    kterm_log("[koboterminal] Initialized: %d symbols resolved, %d failed\n",
+    kterm_log_info("[koboterminal] Initialized: %d symbols resolved, %d failed\n",
             resolved,
             failed);
 

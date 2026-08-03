@@ -60,10 +60,10 @@ int kterm_pty_qt_init(void) {
     /* Create PTY pair and fork child */
     pid = forkpty(&kterm_pty_master_fd, NULL, NULL, NULL);
     if (pid < 0) {
-        kterm_log("[koboterminal] forkpty() failed: %s\n", strerror(errno));
+        kterm_log_error("[koboterminal] forkpty() failed: %s\n", strerror(errno));
         return -1;
     }
-    kterm_log("[koboterminal] forkpty() succeeded, child_pid=%d\n", pid);
+    kterm_log_info("[koboterminal] forkpty() succeeded, child_pid=%d\n", pid);
 
     if (pid == 0) {
         /* Child process: exec shell on slave side */
@@ -86,7 +86,7 @@ int kterm_pty_qt_init(void) {
         (void)fcntl(kterm_pty_master_fd, F_SETFL, flags | O_NONBLOCK);
     }
 
-    kterm_log("[koboterminal] PTY initialized: master_fd=%d, child_pid=%d\n",
+    kterm_log_info("[koboterminal] PTY initialized: master_fd=%d, child_pid=%d\n",
             kterm_pty_master_fd,
             kterm_pty_child_pid);
 
@@ -116,7 +116,7 @@ void kterm_pty_qt_deinit(void) {
         kterm_pty_master_fd = -1;
     }
 
-    kterm_log("[koboterminal] PTY deinitialized\n");
+    kterm_log_info("[koboterminal] PTY deinitialized\n");
 }
 
 ssize_t kterm_pty_qt_read(char *buf, size_t cap) {
@@ -157,7 +157,7 @@ int kterm_pty_qt_write(const char *text, size_t len) {
 
     nwritten = write(kterm_pty_master_fd, text, len);
     if (nwritten < 0) {
-        fprintf(stderr, "[koboterminal] PTY write failed: %s\n", strerror(errno));
+        kterm_log_error("[koboterminal] PTY write failed: %s\n", strerror(errno));
         return -1;
     }
 

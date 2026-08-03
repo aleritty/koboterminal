@@ -1,14 +1,26 @@
 #ifndef KTERM_NICKELHOOK_H
 #define KTERM_NICKELHOOK_H
 
-#include <stddef.h>
-#include <stdbool.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdarg.h>
+#include <stdbool.h>
+#include <stddef.h>
 
 /*
- * Internal logging function — writes to /mnt/onboard/.adds/koboterminal/koboterminal.log
- * Usage: kterm_log("[koboterminal] message\n");
+ * Internal logging function — writes to
+ * /mnt/onboard/.adds/koboterminal/lkoboterminal.log
+ * Verbose mode is controlled by:
+ * /mnt/onboard/.adds/koboterminal/koboterminal.conf
+ *
+ * Usage:
+ * kterm_log_info("[koboterminal] message\n");
+ * kterm_log_error("[koboterminal] failed: %s\n", reason);
  */
+void kterm_log_info(const char *fmt, ...);
+void kterm_log_error(const char *fmt, ...);
 void kterm_log(const char *fmt, ...);
 
 /*
@@ -30,7 +42,8 @@ void kterm_log(const char *fmt, ...);
 
 /* ============================================================================
  * NickelHook API structures (from NickelHook.h)
- * ============================================================================ */
+ * ============================================================================
+ */
 
 /*
  * nh_info: metadata for the module.
@@ -38,11 +51,13 @@ void kterm_log(const char *fmt, ...);
  * Optional fields: desc, uninstall_flag, uninstall_xflag, failsafe_delay
  */
 struct nh_info {
-    const char *name;              /* required: unique mod name */
-    const char *desc;              /* optional: human-readable description */
-    const char *uninstall_flag;    /* optional: path to flag file triggering uninstall */
-    const char *uninstall_xflag;   /* optional: path to xflag file triggering uninstall on delete */
-    int         failsafe_delay;    /* optional: delay in seconds before disarming failsafe */
+  const char *name; /* required: unique mod name */
+  const char *desc; /* optional: human-readable description */
+  const char
+      *uninstall_flag; /* optional: path to flag file triggering uninstall */
+  const char *uninstall_xflag; /* optional: path to xflag file triggering
+                                  uninstall on delete */
+  int failsafe_delay; /* optional: delay in seconds before disarming failsafe */
 };
 
 /*
@@ -50,12 +65,12 @@ struct nh_info {
  * Used to intercept calls to Nickel C++ methods.
  */
 struct nh_hook {
-    const char *sym;     /* the mangled C++ symbol to hook */
-    const char *sym_new; /* the replacement symbol in your mod */
-    const char *lib;     /* the library to hook (e.g., "libnickel.so.1.0.0") */
-    void      **out;     /* variable to store the original function pointer */
-    const char *desc;    /* optional: description */
-    bool       optional; /* default: false */
+  const char *sym;     /* the mangled C++ symbol to hook */
+  const char *sym_new; /* the replacement symbol in your mod */
+  const char *lib;     /* the library to hook (e.g., "libnickel.so.1.0.0") */
+  void **out;          /* variable to store the original function pointer */
+  const char *desc;    /* optional: description */
+  bool optional;       /* default: false */
 };
 
 /*
@@ -63,10 +78,10 @@ struct nh_hook {
  * Used to resolve Nickel C++ class methods via dlsym.
  */
 struct nh_dlsym {
-    const char *name;    /* symbol name to resolve with RTLD_DEFAULT */
-    void      **out;     /* variable to store the resolved pointer */
-    const char *desc;    /* optional */
-    bool       optional; /* default: false */
+  const char *name; /* symbol name to resolve with RTLD_DEFAULT */
+  void **out;       /* variable to store the resolved pointer */
+  const char *desc; /* optional */
+  bool optional;    /* default: false */
 };
 
 /*
@@ -74,42 +89,42 @@ struct nh_dlsym {
  * The NickelHook() macro constructs this with __attribute__((constructor)).
  */
 struct nh {
-    int (*init)();           /* optional init function */
-    struct nh_info  *info;
-    struct nh_hook  *hook;   /* NULL-terminated array */
-    struct nh_dlsym *dlsym;  /* NULL-terminated array */
-    bool (*uninstall)();     /* optional cleanup on uninstall */
+  int (*init)(); /* optional init function */
+  struct nh_info *info;
+  struct nh_hook *hook;   /* NULL-terminated array */
+  struct nh_dlsym *dlsym; /* NULL-terminated array */
+  bool (*uninstall)();    /* optional cleanup on uninstall */
 };
+
+extern struct nh NickelHook;
 
 /*
  * Convenience macro for building nh_hook arrays.
  */
-#define nh_symoutptr(sym) (void**)(&(sym))
+#define nh_symoutptr(sym) (void **)(&(sym))
 
 /*
  * NickelHook() macro: constructs the nh structure with visibility("default").
  * This is the entry point that NickelHook's loader finds via dlsym.
- * Uses static const to avoid -Wpedantic warnings about non-constant initializers.
+ * Uses static const to avoid -Wpedantic warnings about non-constant
+ * initializers.
  */
-#define NickelHook(...)                                                    \
-    static const struct nh NickelHook_data = {                             \
-        __VA_ARGS__                                                        \
-    };                                                                    \
-    __attribute__((visibility("default")))                                 \
-    struct nh NickelHook = NickelHook_data;
+#define NickelHook(...)                                                        \
+  __attribute__((visibility("default"))) struct nh NickelHook = {__VA_ARGS__};
 
 /* ============================================================================
  * Nickel C++ class method signatures (from NickelDBus NDBCfmDlg)
- * ============================================================================ */
+ * ============================================================================
+ */
 
 /*
  * Type aliases for Nickel Qt classes.
  * These are typedef'd in NickelDBus for convenience.
  */
-typedef void *ConfirmationDialog;    /* QDialog subclass */
-typedef int   KeyboardScript;        /* enum */
-typedef void *TouchLineEdit;         /* QLineEdit subclass */
-typedef void *N3ConfirmationTextEditField; /* QWidget subclass */
+typedef struct ConfirmationDialog ConfirmationDialog;
+typedef int KeyboardScript; /* enum */
+typedef struct TouchLineEdit TouchLineEdit;
+typedef struct N3ConfirmationTextEditField N3ConfirmationTextEditField;
 
 /*
  * Function pointer types for Nickel C++ methods.
@@ -117,49 +132,68 @@ typedef void *N3ConfirmationTextEditField; /* QWidget subclass */
  */
 
 /* ConfirmationDialogFactory methods */
-typedef ConfirmationDialog *(*ConfirmationDialogFactory_getConfirmationDialog_t)(void *parent);
-typedef void                  (*ConfirmationDialogFactory_showTextEditDialog_t)(const void *title);
+typedef ConfirmationDialog *(
+    *ConfirmationDialogFactory_getConfirmationDialog_t)(void *parent);
+typedef void (*ConfirmationDialogFactory_showTextEditDialog_t)(
+    const void *title);
 
 /* ConfirmationDialog methods (static methods on the class) */
-typedef void (*ConfirmationDialog__setTitle_t)(ConfirmationDialog *_this, const void *title);
-typedef void (*ConfirmationDialog__setText_t)(ConfirmationDialog *_this, const void *text);
-typedef void (*ConfirmationDialog__setAcceptButtonText_t)(ConfirmationDialog *_this, const void *text);
-typedef void (*ConfirmationDialog__setRejectButtonText_t)(ConfirmationDialog *_this, const void *text);
-typedef void (*ConfirmationDialog__showCloseButton_t)(ConfirmationDialog *_this, bool show);
-typedef void (*ConfirmationDialog__setRejectOnOutsideTap_t)(ConfirmationDialog *_this, bool set);
-typedef void (*ConfirmationDialog__addWidget_t)(ConfirmationDialog *_this, void *widget);
+typedef void (*ConfirmationDialog__setTitle_t)(ConfirmationDialog *_this,
+                                               const void *title);
+typedef void (*ConfirmationDialog__setText_t)(ConfirmationDialog *_this,
+                                              const void *text);
+typedef void (*ConfirmationDialog__setAcceptButtonText_t)(
+    ConfirmationDialog *_this, const void *text);
+typedef void (*ConfirmationDialog__setRejectButtonText_t)(
+    ConfirmationDialog *_this, const void *text);
+typedef void (*ConfirmationDialog__showCloseButton_t)(ConfirmationDialog *_this,
+                                                      bool show);
+typedef void (*ConfirmationDialog__setRejectOnOutsideTap_t)(
+    ConfirmationDialog *_this, bool set);
+typedef void (*ConfirmationDialog__addWidget_t)(ConfirmationDialog *_this,
+                                                void *widget);
 typedef void (*ConfirmationDialog__show_t)(ConfirmationDialog *_this);
 typedef void (*ConfirmationDialog__close_t)(ConfirmationDialog *_this);
 
 /* N3ConfirmationTextEditField constructors */
 typedef N3ConfirmationTextEditField *(*N3ConfirmationTextEditField_ctor_t)(
-    N3ConfirmationTextEditField *_this, ConfirmationDialog *dlg, KeyboardScript ks);
+    N3ConfirmationTextEditField *_this, ConfirmationDialog *dlg,
+    KeyboardScript ks);
 typedef N3ConfirmationTextEditField *(*N3ConfirmationTextEditField_ctor2_t)(
     N3ConfirmationTextEditField *_this, ConfirmationDialog *dlg);
 
 /* TouchLineEdit accessors */
-typedef TouchLineEdit *(*N3ConfirmationTextEditField_textEdit_t)(N3ConfirmationTextEditField *_this);
+typedef TouchLineEdit *(*N3ConfirmationTextEditField_textEdit_t)(
+    N3ConfirmationTextEditField *_this);
 
 /* TouchLineEdit methods */
-typedef void (*TouchLineEdit__setPlaceholderText_t)(TouchLineEdit *_this, const void *text);
-typedef void (*TouchLineEdit__setText_t)(TouchLineEdit *_this, const void *text);
+typedef void (*TouchLineEdit__setPlaceholderText_t)(TouchLineEdit *_this,
+                                                    const void *text);
+typedef void (*TouchLineEdit__setText_t)(TouchLineEdit *_this,
+                                         const void *text);
 typedef void (*TouchLineEdit__setFocus_t)(TouchLineEdit *_this);
 typedef const char *(*TouchLineEdit__text_t)(TouchLineEdit *_this);
 
 /* ============================================================================
  * Resolved Nickel C++ method pointers (defined in nickelhook.c)
- * ============================================================================ */
+ * ============================================================================
+ */
 
 /* ConfirmationDialogFactory */
-extern ConfirmationDialogFactory_getConfirmationDialog_t ConfirmationDialogFactory_getConfirmationDialog;
+extern ConfirmationDialogFactory_getConfirmationDialog_t
+    ConfirmationDialogFactory_getConfirmationDialog;
 
 /* ConfirmationDialog methods */
 extern ConfirmationDialog__setTitle_t ConfirmationDialog__setTitle;
 extern ConfirmationDialog__setText_t ConfirmationDialog__setText;
-extern ConfirmationDialog__setAcceptButtonText_t ConfirmationDialog__setAcceptButtonText;
-extern ConfirmationDialog__setRejectButtonText_t ConfirmationDialog__setRejectButtonText;
-extern ConfirmationDialog__showCloseButton_t ConfirmationDialog__showCloseButton;
-extern ConfirmationDialog__setRejectOnOutsideTap_t ConfirmationDialog__setRejectOnOutsideTap;
+extern ConfirmationDialog__setAcceptButtonText_t
+    ConfirmationDialog__setAcceptButtonText;
+extern ConfirmationDialog__setRejectButtonText_t
+    ConfirmationDialog__setRejectButtonText;
+extern ConfirmationDialog__showCloseButton_t
+    ConfirmationDialog__showCloseButton;
+extern ConfirmationDialog__setRejectOnOutsideTap_t
+    ConfirmationDialog__setRejectOnOutsideTap;
 extern ConfirmationDialog__addWidget_t ConfirmationDialog__addWidget;
 extern ConfirmationDialog__show_t ConfirmationDialog__show;
 extern ConfirmationDialog__close_t ConfirmationDialog__close;
@@ -167,7 +201,8 @@ extern ConfirmationDialog__close_t ConfirmationDialog__close;
 /* N3ConfirmationTextEditField constructors */
 extern N3ConfirmationTextEditField_ctor_t N3ConfirmationTextEditField_ctor;
 extern N3ConfirmationTextEditField_ctor2_t N3ConfirmationTextEditField_ctor2;
-extern N3ConfirmationTextEditField_textEdit_t N3ConfirmationTextEditField_textEdit;
+extern N3ConfirmationTextEditField_textEdit_t
+    N3ConfirmationTextEditField_textEdit;
 
 /* TouchLineEdit methods */
 extern TouchLineEdit__setPlaceholderText_t TouchLineEdit__setPlaceholderText;
@@ -193,5 +228,10 @@ int kterm_nhook_init(void);
  * Returns 0 on success, -1 on failure.
  */
 int kterm_nhook_dialog_show(void);
+void kterm_nhook_dialog_reset(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* KTERM_NICKELHOOK_H */

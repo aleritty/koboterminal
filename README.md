@@ -16,7 +16,7 @@ A terminal emulator for Kobo e-reader devices, integrated with Nickel via `LD_PR
   - [🚀 Quick Start](#-quick-start)
     - [Install on Kobo](#install-on-kobo)
       - [1. Bootstrap](#1-bootstrap)
-      - [2. Build and package](#2-build-and-package)
+      - [2. Build](#2-build)
       - [3. Deploy to Kobo](#3-deploy-to-kobo)
       - [4. Restart Nickel](#4-restart-nickel)
     - [Launch](#launch)
@@ -36,6 +36,7 @@ A terminal emulator for Kobo e-reader devices, integrated with Nickel via `LD_PR
     - [Terminal doesn't appear in NickelMenu](#terminal-doesnt-appear-in-nickelmenu)
     - [Build fails](#build-fails)
     - [Dialog crashes on show](#dialog-crashes-on-show)
+    - [NickelMenu hook returns error 127](#nickelmenu-hook-returns-error-127)
   - [📄 License](#-license)
   - [🙏 Acknowledgements](#-acknowledgements)
 
@@ -108,20 +109,17 @@ A terminal emulator for Kobo e-reader devices, integrated with Nickel via `LD_PR
 scripts/bootstrap.sh
 ```
 
-#### 2. Build and package
+#### 2. Build
 
 ```bash
-# Build, package, and clean up in one step
-scripts/build-nickelhook.sh
+# Build the shared library
+scripts/build.sh
 ```
-
-This produces `koboterminal-install.tgz` containing the library, activation script, and README.
 
 #### 3. Deploy to Kobo
 
 ```bash
-scp koboterminal-install.tgz root@<KOBO_IP>:/tmp/
-ssh root@<KOBO_IP> 'cd /tmp && tar xzf koboterminal-install.tgz'
+scripts/sync.sh
 ```
 
 #### 4. Restart Nickel
@@ -150,7 +148,7 @@ scripts/uninstall-nickelhook.sh
 
 ```bash
 # On the Kobo device
-rm /mnt/onboard/.adds/koboterminal/libkoboterminal.so
+rm /usr/local/Kobo/imageformats/libkoboterminal.so
 rmdir /mnt/onboard/.adds/koboterminal 2>/dev/null || true
 ```
 
@@ -186,7 +184,7 @@ meson compile -C build-host
 docker build -t koboterminal-kobo-toolchain -f docker/kobo-toolchain/Dockerfile .
 
 # Build
-scripts/build-nickelhook.sh
+scripts/build.sh
 ```
 
 #### Full project build (standalone Kobo target)
@@ -245,16 +243,15 @@ Standard VT100 escape sequences are supported for terminal rendering.
 
 ## 📦 Packaging
 
-The `scripts/build-nickelhook.sh` script automatically creates `koboterminal-install.tgz` after building.
+The `scripts/build.sh` script builds the shared library and produces deployment artifacts in `dist/KoboRoot/` and `dist/KoboRoot.tgz`.
 
 Deploy to Kobo:
 
 ```bash
-scp koboterminal-install.tgz root@<KOBO_IP>:/tmp/
-ssh root@<KOBO_IP> 'cd /tmp && tar xzf koboterminal-install.tgz'
+scripts/sync.sh
 ```
 
-For uninstallation, use the `packaging/uninstall.sh` script on the Kobo device.
+For uninstallation, use the `deploy/uninstall.sh` script on the Kobo device.
 
 ---
 
@@ -265,7 +262,7 @@ For uninstallation, use the `packaging/uninstall.sh` script on the Kobo device.
 1. Verify the library is installed:
 
    ```bash
-   ls -la /mnt/onboard/.adds/koboterminal/libkoboterminal.so
+  ls -la /usr/local/Kobo/imageformats/libkoboterminal.so
    ```
 
 2. Restart Nickel after making changes.
@@ -289,7 +286,7 @@ For uninstallation, use the `packaging/uninstall.sh` script on the Kobo device.
 1. Verify the library is installed on the Kobo:
 
    ```bash
-   ls -la /mnt/onboard/.adds/koboterminal/libkoboterminal.so
+  ls -la /usr/local/Kobo/imageformats/libkoboterminal.so
    ```
 
 2. Check Nickel logs:
@@ -297,6 +294,22 @@ For uninstallation, use the `packaging/uninstall.sh` script on the Kobo device.
    ```bash
    log_view /var/log/nickel.log
    ```
+
+### NickelMenu hook returns error 127
+
+KoboTerminal now writes hook logs to:
+
+```bash
+/mnt/onboard/.adds/koboterminal/lkoboterminal.log
+```
+
+Logging mode is controlled by:
+
+```bash
+/mnt/onboard/.adds/koboterminal/koboterminal.conf
+```
+
+Set `verbose=0` for errors only (default), or `verbose=1` for detailed logs.
 
 ---
 

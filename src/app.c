@@ -6,7 +6,7 @@
  * which is called by NickelHook's loader.
  *
  * The application lifecycle:
- *   1. NickelHook loads the .so via LD_PRELOAD
+ *   1. Nickel auto-loads the .so as a Qt plugin from /usr/local/Kobo/imageformats
  *   2. nh_init() resolves all Nickel symbols
  *   3. kterm_nhook_init() initializes PTY and terminal state
  *   4. User triggers dialog via NickelMenu or other hook

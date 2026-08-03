@@ -3,94 +3,143 @@ set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD_DIR=${1:-build-nickelhook}
-IMAGE=${IMAGE:-koboterminal-kobo-toolchain:latest}
-OUTPUT_INSTALL_TGZ=${2:-koboterminal-install.tgz}
-OUTPUT_UNINSTALL_TGZ="koboterminal-uninstall.tgz"
+IMAGE=${IMAGE:-ghcr.io/pgaskin/nickeltc:1}
+PULL_IMAGE=${PULL_IMAGE:-0}
+NICKELTC_HOME="$ROOT_DIR/.nickeltc-home"
+DIST_DIR="$ROOT_DIR/dist"
+OUTPUT_KOBOROOT_TGZ="$DIST_DIR/KoboRoot.tgz"
+OUTPUT_KOBOROOT_DIR="$DIST_DIR/KoboRoot"
 
 cd "$ROOT_DIR"
 
 # Clean dist completely before building
-rm -rf "$ROOT_DIR/dist"
+rm -rf "$DIST_DIR"
 
 # Clean build directory
 rm -rf "$BUILD_DIR"
 
 echo "=== Building NickelHook shared library ==="
 echo "Build directory: $BUILD_DIR"
+echo "Docker image: $IMAGE"
+
+ensure_image_ready() {
+	if [ "$PULL_IMAGE" = "1" ]; then
+		echo "=== Pulling NickelTC image: $IMAGE ==="
+		docker pull "$IMAGE"
+		return
+	fi
+
+	if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+		echo "=== Pulling NickelTC image: $IMAGE ==="
+		docker pull "$IMAGE"
+	fi
+}
+
+ensure_image_ready
+mkdir -p "$NICKELTC_HOME"
 
 # Build inside the Kobo toolchain container
+echo "=== Running Meson setup/compile in Docker ==="
 docker run --rm \
 	--user "$(id -u):$(id -g)" \
-	-e HOME=/tmp \
-	-v "$PWD:/work" \
-	-w /work \
+	-e HOME="$NICKELTC_HOME" \
+	-v "$PWD:$PWD" \
+	-v "$NICKELTC_HOME:$NICKELTC_HOME" \
+	-w "$PWD" \
 	"$IMAGE" \
-	bash -lc 'export PATH="/opt/x-tools/arm-kobo-linux-gnueabihf/bin:$PATH" && meson setup "$1" --cross-file "toolchains/kobo-cross.ini" -Dwith_nickelhook=true && meson compile -C "$1"' \
+	bash -lc '
+		set -eu
+		export PATH="$HOME/.local/bin:/tc/arm-nickel-linux-gnueabihf/bin:$PATH"
+
+		if ! command -v meson >/dev/null 2>&1; then
+			echo "Installing Meson in container user environment..."
+			python3 -m pip install --user meson
+		fi
+
+		if ! command -v arm-nickel-linux-gnueabihf-pkg-config >/dev/null 2>&1 && ! command -v arm-nickel-linux-gnueabihf-pkgconf >/dev/null 2>&1; then
+			echo "Error: cross pkg-config tool not found in container PATH" >&2
+			exit 1
+		fi
+
+		if ! command -v moc >/dev/null 2>&1; then
+			echo "Error: moc not found in container image." >&2
+			exit 1
+		fi
+
+		meson setup "$1" --cross-file "toolchains/kobo-cross.ini" -Dwith_nickelhook=true
+		meson compile -C "$1"
+	' \
 	_build "$BUILD_DIR"
 
 # Create dist structure
-mkdir -p "$ROOT_DIR/dist/.adds/koboterminal"
+mkdir -p "$DIST_DIR/.adds/koboterminal"
+mkdir -p "$DIST_DIR/usr/local/Kobo/imageformats"
 
-# Copy the shared library to uncompressed install location
-cp "$BUILD_DIR/libkoboterminal.so" "$ROOT_DIR/dist/.adds/koboterminal/libkoboterminal.so"
-chmod 755 "$ROOT_DIR/dist/.adds/koboterminal/libkoboterminal.so"
+# Copy the shared library to Qt plugin auto-load location
+cp "$BUILD_DIR/libkoboterminal.so" "$DIST_DIR/usr/local/Kobo/imageformats/libkoboterminal.so"
+chmod 755 "$DIST_DIR/usr/local/Kobo/imageformats/libkoboterminal.so"
+
+# Copy NickelMenu config into install location
+if [ -f "$ROOT_DIR/deploy/nickelmenu.conf" ]; then
+	cp "$ROOT_DIR/deploy/nickelmenu.conf" "$DIST_DIR/.adds/koboterminal/nickelmenu.conf"
+	chmod 644 "$DIST_DIR/.adds/koboterminal/nickelmenu.conf"
+fi
+
+# Copy logging config into install location
+if [ -f "$ROOT_DIR/deploy/koboterminal.conf" ]; then
+	cp "$ROOT_DIR/deploy/koboterminal.conf" "$DIST_DIR/.adds/koboterminal/koboterminal.conf"
+	chmod 644 "$DIST_DIR/.adds/koboterminal/koboterminal.conf"
+fi
 
 # Clean up build directory
 rm -rf "$BUILD_DIR"
 
-echo ""
-echo "=== Packaging install tarball ==="
-STAGING=$(mktemp -d)
-trap 'rm -rf "$STAGING"' EXIT INT TERM
-
-mkdir -p "$STAGING/.adds/koboterminal"
-cp "$ROOT_DIR/dist/.adds/koboterminal/libkoboterminal.so" "$STAGING/.adds/koboterminal/libkoboterminal.so"
-chmod 755 "$STAGING/.adds/koboterminal/libkoboterminal.so"
-cp packaging/README-install.txt "$STAGING/README.txt"
-
-cd "$STAGING"
-tar czf "$ROOT_DIR/$OUTPUT_INSTALL_TGZ" .
-
-echo "Created: $ROOT_DIR/$OUTPUT_INSTALL_TGZ"
-echo "Size: $(du -sh "$ROOT_DIR/$OUTPUT_INSTALL_TGZ" | cut -f1)"
-
 cd "$ROOT_DIR"
 
-# Package uninstall tarball
+# Package KoboRoot artifacts for direct Kobo update install (.kobo/KoboRoot.tgz)
 echo ""
-echo "=== Packaging uninstall tarball ==="
-STAGING2=$(mktemp -d)
+echo "=== Packaging KoboRoot artifacts ==="
+rm -rf "$OUTPUT_KOBOROOT_DIR"
+mkdir -p "$OUTPUT_KOBOROOT_DIR/usr/local/Kobo/imageformats"
+mkdir -p "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal"
 
-mkdir -p "$STAGING2/.adds/koboterminal"
-cp "$ROOT_DIR/dist/.adds/koboterminal/libkoboterminal.so" "$STAGING2/.adds/koboterminal/libkoboterminal.so"
-chmod 755 "$STAGING2/.adds/koboterminal/libkoboterminal.so"
-cp packaging/uninstall.sh "$STAGING2/uninstall.sh"
-chmod +x "$STAGING2/uninstall.sh"
-cp packaging/README-uninstall.txt "$STAGING2/README.txt"
+cp "$DIST_DIR/usr/local/Kobo/imageformats/libkoboterminal.so" "$OUTPUT_KOBOROOT_DIR/usr/local/Kobo/imageformats/libkoboterminal.so"
+chmod 755 "$OUTPUT_KOBOROOT_DIR/usr/local/Kobo/imageformats/libkoboterminal.so"
 
-cd "$STAGING2"
-tar czf "$ROOT_DIR/$OUTPUT_UNINSTALL_TGZ" .
+if [ -f "$DIST_DIR/.adds/koboterminal/nickelmenu.conf" ]; then
+	cp "$DIST_DIR/.adds/koboterminal/nickelmenu.conf" "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/nickelmenu.conf"
+	chmod 644 "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/nickelmenu.conf"
+fi
+if [ -f "$DIST_DIR/.adds/koboterminal/koboterminal.conf" ]; then
+	cp "$DIST_DIR/.adds/koboterminal/koboterminal.conf" "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/koboterminal.conf"
+	chmod 644 "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/koboterminal.conf"
+fi
+if [ -f "$DIST_DIR/.adds/koboterminal/koboterminal-trigger.sh" ]; then
+	cp "$DIST_DIR/.adds/koboterminal/koboterminal-trigger.sh" "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/koboterminal-trigger.sh"
+	chmod 755 "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/koboterminal-trigger.sh"
+fi
 
-echo "Created: $ROOT_DIR/$OUTPUT_UNINSTALL_TGZ"
-echo "Size: $(du -sh "$ROOT_DIR/$OUTPUT_UNINSTALL_TGZ" | cut -f1)"
+rm -f "$OUTPUT_KOBOROOT_TGZ"
+tar czf "$OUTPUT_KOBOROOT_TGZ" -C "$OUTPUT_KOBOROOT_DIR" .
 
-rm -rf "$STAGING2"
+echo "Created: $OUTPUT_KOBOROOT_TGZ"
+echo "Size: $(du -sh "$OUTPUT_KOBOROOT_TGZ" | cut -f1)"
+
+# Keep dist clean: only retain KoboRoot/ and KoboRoot.tgz.
+rm -rf "$DIST_DIR/.adds" "$DIST_DIR/usr"
 
 echo ""
 echo "=== Done ==="
-echo "Install package:    $ROOT_DIR/$OUTPUT_INSTALL_TGZ"
-echo "Uninstall package:  $ROOT_DIR/$OUTPUT_UNINSTALL_TGZ"
+echo "KoboRoot package:   $OUTPUT_KOBOROOT_TGZ"
+echo "KoboRoot folder:    $OUTPUT_KOBOROOT_DIR"
 echo ""
 echo "=== Build output ==="
-echo "Uncompressed install:"
-echo "  $ROOT_DIR/dist/.adds/koboterminal/libkoboterminal.so"
+echo "KoboRoot tree for sync.sh:"
+echo "  $OUTPUT_KOBOROOT_DIR"
+echo "KoboRoot package:"
+echo "  $OUTPUT_KOBOROOT_TGZ"
 echo ""
-echo "To install on Kobo:"
-echo "  1. scp $OUTPUT_INSTALL_TGZ root@<KOBO_IP>:/tmp/"
-echo "  2. ssh root@<KOBO_IP> 'cd /tmp && tar xzf $OUTPUT_INSTALL_TGZ'"
-echo "  3. Restart Nickel"
-echo ""
-echo "To uninstall on Kobo:"
-echo "  1. scp $OUTPUT_UNINSTALL_TGZ root@<KOBO_IP>:/tmp/"
-echo "  2. ssh root@<KOBO_IP> 'cd /tmp && tar xzf $OUTPUT_UNINSTALL_TGZ'"
-echo "  3. Run /tmp/uninstall.sh"
+echo "To install via KoboRoot.tgz:"
+echo "  1. Copy $(basename "$OUTPUT_KOBOROOT_TGZ") to KOBOeReader/.kobo/"
+echo "  2. Safely eject the Kobo"
+echo "  3. Wait for reboot/install to complete"
