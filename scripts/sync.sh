@@ -5,6 +5,7 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 KOBOROOT_DIR="$ROOT_DIR/dist/KoboRoot"
 SO_FILE="$KOBOROOT_DIR/usr/local/Kobo/imageformats/libkoboterminal.so"
 CFG_DIR="$KOBOROOT_DIR/mnt/onboard/.adds/koboterminal"
+INSTALL_SH="$CFG_DIR/install.sh"
 REMOTE_USER=${REMOTE_USER:-root}
 REMOTE_ROOT=${REMOTE_ROOT:-/mnt/onboard}
 INSTALL_DIR=${1:-.adds/koboterminal}
@@ -94,6 +95,14 @@ echo ""
 echo "=== Sync complete ==="
 echo "Library synced to: $REMOTE_USER@$KOBO_IP:$IMAGEFORMATS_DIR/libkoboterminal.so"
 echo "Config files synced to: $REMOTE_USER@$KOBO_IP:$REMOTE_DIR"
+
+# Activate: merge the NickelMenu entry, write config defaults.
+if [ -f "$INSTALL_SH" ]; then
+	echo ""
+	echo "Running install.sh on device..."
+	run_ssh "$REMOTE_USER@$KOBO_IP" "sh '$REMOTE_DIR/install.sh'"
+fi
+
 echo ""
 echo "To activate on Kobo:"
 echo "  Restart Nickel (Settings → Quit) or reboot the device"

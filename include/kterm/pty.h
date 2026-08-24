@@ -14,6 +14,7 @@ void kterm_pty_qt_deinit(void);
 ssize_t kterm_pty_qt_read(char *buf, size_t cap);
 int kterm_pty_qt_write(const char *text, size_t len);
 int kterm_pty_qt_is_running(void);
+int kterm_pty_qt_get_fd(void);
 
 #ifdef __cplusplus
 }

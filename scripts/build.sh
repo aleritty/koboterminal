@@ -71,31 +71,6 @@ docker run --rm \
 	' \
 	_build "$BUILD_DIR"
 
-# Create dist structure
-mkdir -p "$DIST_DIR/.adds/koboterminal"
-mkdir -p "$DIST_DIR/usr/local/Kobo/imageformats"
-
-# Copy the shared library to Qt plugin auto-load location
-cp "$BUILD_DIR/libkoboterminal.so" "$DIST_DIR/usr/local/Kobo/imageformats/libkoboterminal.so"
-chmod 755 "$DIST_DIR/usr/local/Kobo/imageformats/libkoboterminal.so"
-
-# Copy NickelMenu config into install location
-if [ -f "$ROOT_DIR/deploy/nickelmenu.conf" ]; then
-	cp "$ROOT_DIR/deploy/nickelmenu.conf" "$DIST_DIR/.adds/koboterminal/nickelmenu.conf"
-	chmod 644 "$DIST_DIR/.adds/koboterminal/nickelmenu.conf"
-fi
-
-# Copy logging config into install location
-if [ -f "$ROOT_DIR/deploy/koboterminal.conf" ]; then
-	cp "$ROOT_DIR/deploy/koboterminal.conf" "$DIST_DIR/.adds/koboterminal/koboterminal.conf"
-	chmod 644 "$DIST_DIR/.adds/koboterminal/koboterminal.conf"
-fi
-
-# Clean up build directory
-rm -rf "$BUILD_DIR"
-
-cd "$ROOT_DIR"
-
 # Package KoboRoot artifacts for direct Kobo update install (.kobo/KoboRoot.tgz)
 echo ""
 echo "=== Packaging KoboRoot artifacts ==="
@@ -103,30 +78,31 @@ rm -rf "$OUTPUT_KOBOROOT_DIR"
 mkdir -p "$OUTPUT_KOBOROOT_DIR/usr/local/Kobo/imageformats"
 mkdir -p "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal"
 
-cp "$DIST_DIR/usr/local/Kobo/imageformats/libkoboterminal.so" "$OUTPUT_KOBOROOT_DIR/usr/local/Kobo/imageformats/libkoboterminal.so"
+# Shared library, loaded by Nickel via Qt plugin auto-loading from imageformats.
+cp "$BUILD_DIR/libkoboterminal.so" "$OUTPUT_KOBOROOT_DIR/usr/local/Kobo/imageformats/libkoboterminal.so"
 chmod 755 "$OUTPUT_KOBOROOT_DIR/usr/local/Kobo/imageformats/libkoboterminal.so"
 
-if [ -f "$DIST_DIR/.adds/koboterminal/nickelmenu.conf" ]; then
-	cp "$DIST_DIR/.adds/koboterminal/nickelmenu.conf" "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/nickelmenu.conf"
-	chmod 644 "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/nickelmenu.conf"
-fi
-if [ -f "$DIST_DIR/.adds/koboterminal/koboterminal.conf" ]; then
-	cp "$DIST_DIR/.adds/koboterminal/koboterminal.conf" "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/koboterminal.conf"
-	chmod 644 "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/koboterminal.conf"
-fi
-if [ -f "$DIST_DIR/.adds/koboterminal/koboterminal-trigger.sh" ]; then
-	cp "$DIST_DIR/.adds/koboterminal/koboterminal-trigger.sh" "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/koboterminal-trigger.sh"
-	chmod 755 "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/koboterminal-trigger.sh"
-fi
+# Runtime config + docs, staged under .adds/ for install.sh/uninstall.sh and
+# for the user to find on-device.
+for f in nickelmenu.conf koboterminal.conf README.md; do
+	cp "$ROOT_DIR/packaging/$f" "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/$f"
+	chmod 644 "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/$f"
+done
+for f in install.sh uninstall.sh; do
+	cp "$ROOT_DIR/packaging/$f" "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/$f"
+	chmod 755 "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/$f"
+done
+
+# Clean up build directory
+rm -rf "$BUILD_DIR"
+
+cd "$ROOT_DIR"
 
 rm -f "$OUTPUT_KOBOROOT_TGZ"
 tar czf "$OUTPUT_KOBOROOT_TGZ" -C "$OUTPUT_KOBOROOT_DIR" .
 
 echo "Created: $OUTPUT_KOBOROOT_TGZ"
 echo "Size: $(du -sh "$OUTPUT_KOBOROOT_TGZ" | cut -f1)"
-
-# Keep dist clean: only retain KoboRoot/ and KoboRoot.tgz.
-rm -rf "$DIST_DIR/.adds" "$DIST_DIR/usr"
 
 echo ""
 echo "=== Done ==="
@@ -141,5 +117,7 @@ echo "  $OUTPUT_KOBOROOT_TGZ"
 echo ""
 echo "To install via KoboRoot.tgz:"
 echo "  1. Copy $(basename "$OUTPUT_KOBOROOT_TGZ") to KOBOeReader/.kobo/"
-echo "  2. Safely eject the Kobo"
-echo "  3. Wait for reboot/install to complete"
+echo "  2. Safely eject the Kobo, wait for reboot/install to complete"
+echo "  3. ssh in and run: sh /mnt/onboard/.adds/koboterminal/install.sh"
+echo ""
+echo "Or use scripts/sync.sh to push + activate over SSH in one step."

@@ -38,9 +38,6 @@ int kterm_term_init(struct kterm_term *term, int cols, int rows) {
     }
 
     memset(term, 0, sizeof(*term));
-    term->cols = cols;
-    term->rows = rows;
-    term->bytes_fed = 0;
 
     /* Create the TSM screen */
     rc = tsm_screen_new(&term->screen, kterm_tsm_log, NULL);
@@ -77,29 +74,8 @@ int kterm_term_feed(struct kterm_term *term, const char *buf, size_t len) {
         return -1;
     }
 
-    term->bytes_fed += len;
-
     /* Feed the data to the VTE for parsing */
     tsm_vte_input(term->vte, buf, len);
-
-    return 0;
-}
-
-int kterm_term_resize(struct kterm_term *term, int cols, int rows) {
-    int rc;
-
-    if (!term) {
-        return -1;
-    }
-
-    term->cols = cols;
-    term->rows = rows;
-
-    rc = tsm_screen_resize(term->screen, (unsigned int)cols, (unsigned int)rows);
-    if (rc != 0) {
-        fprintf(stderr, "Failed to resize TSM screen: %s\n", strerror(-rc));
-        return -1;
-    }
 
     return 0;
 }
@@ -122,20 +98,6 @@ void kterm_term_deinit(struct kterm_term *term) {
     memset(term, 0, sizeof(*term));
 }
 
-int kterm_term_get_cols(const struct kterm_term *term) {
-    if (!term) {
-        return 0;
-    }
-    return term->cols;
-}
-
-int kterm_term_get_rows(const struct kterm_term *term) {
-    if (!term) {
-        return 0;
-    }
-    return term->rows;
-}
-
 struct tsm_screen *kterm_term_get_screen(struct kterm_term *term) {
     if (!term) {
         return NULL;
@@ -143,9 +105,36 @@ struct tsm_screen *kterm_term_get_screen(struct kterm_term *term) {
     return term->screen;
 }
 
-struct tsm_vte *kterm_term_get_vte(struct kterm_term *term) {
-    if (!term) {
-        return NULL;
+/* ============================================================================
+ * Global terminal singleton (shared by the PTY reader and the serializer)
+ * ============================================================================ */
+
+static struct kterm_term kterm_global_term;
+static int kterm_global_term_active = 0;
+
+int kterm_term_global_init(int cols, int rows) {
+    if (kterm_global_term_active) {
+        kterm_term_deinit(&kterm_global_term);
+        kterm_global_term_active = 0;
     }
-    return term->vte;
+
+    if (kterm_term_init(&kterm_global_term, cols, rows) != 0) {
+        return -1;
+    }
+
+    kterm_global_term_active = 1;
+    return 0;
+}
+
+void kterm_term_global_deinit(void) {
+    if (!kterm_global_term_active) {
+        return;
+    }
+
+    kterm_term_deinit(&kterm_global_term);
+    kterm_global_term_active = 0;
+}
+
+struct kterm_term *kterm_term_global(void) {
+    return kterm_global_term_active ? &kterm_global_term : NULL;
 }

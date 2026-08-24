@@ -2,22 +2,22 @@
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-IMAGE=${IMAGE:-koboterminal-kobo-toolchain:latest}
+IMAGE=${IMAGE:-ghcr.io/pgaskin/nickeltc:1}
 
 cd "$ROOT_DIR"
 
 echo "=== Bootstrapping KoboTerminal ==="
 
-# Build Kobo toolchain Docker image (first time only)
+# scripts/build.sh cross-compiles inside this prebuilt toolchain image.
 if command -v docker >/dev/null 2>&1; then
 	if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-		echo "Building Kobo toolchain image..."
-		docker build -t "$IMAGE" -f docker/kobo-toolchain/Dockerfile .
+		echo "Pulling Kobo toolchain image: $IMAGE"
+		docker pull "$IMAGE"
 	else
-		echo "Toolchain image '$IMAGE' already exists; skipping build"
+		echo "Toolchain image '$IMAGE' already present; skipping pull"
 	fi
 else
-	echo "docker not found; skipped Kobo toolchain image build" >&2
+	echo "docker not found; scripts/build.sh will need it" >&2
 fi
 
 echo ""
@@ -26,3 +26,6 @@ echo ""
 echo "Next steps:"
 echo "  1. Build and package: scripts/build.sh"
 echo "  2. Deploy to Kobo: scripts/sync.sh"
+echo ""
+echo "Note: docker/Dockerfile builds an alternative koxtoolchain-based image;"
+echo "scripts/build.sh does not use it by default (see IMAGE above)."

@@ -1,0 +1,12 @@
+# Build directories & packaged output (recreated by scripts/build.sh)
+/dist/
+/build/
+/build-*/
+
+# Docker toolchain scratch HOME created by scripts/build.sh
+/.nickeltc-home/
+
+# Meson-fetched subproject sources (see subprojects/*.wrap); only the wrap
+# files and packagefiles/ patches are tracked, not the fetched trees.
+/subprojects/*/
+!/subprojects/packagefiles/

@@ -5,6 +5,7 @@
 #include <dlfcn.h>
 #include <elf.h>
 #include <errno.h>
+#include <limits.h>
 #include <link.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -13,6 +14,8 @@
 #include <string.h>
 #include <time.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <syslog.h>
 #include <unistd.h>
 
@@ -170,6 +173,117 @@ static void *kterm_nh_hook_lib(const char *name, void *libnickel) {
     return dlopen(name, RTLD_LAZY | RTLD_LOCAL);
 }
 
+/* ============================================================================
+ * Boot-loop watchdog
+ *
+ * If Nickel crashes and respawns repeatedly right after our hooks are
+ * installed, each respawn re-runs this constructor — there is no other
+ * chance to intervene. The pattern: drop a marker before doing anything
+ * risky, then fork a detached helper that clears the marker only after
+ * `failsafe_delay` seconds have passed. If the marker is still there on the
+ * *next* run, the previous attempt never survived that long, so we disable
+ * ourselves (rename our own .so) instead of hooking again and repeating the
+ * crash forever.
+ *
+ * This only catches crashes within the confirmation window right after
+ * load — not a crash triggered later by actually using the terminal.
+ * ============================================================================ */
+
+#define KTERM_WATCHDOG_DIR "/mnt/onboard/.adds/koboterminal"
+#define KTERM_WATCHDOG_MARKER KTERM_WATCHDOG_DIR "/.watchdog-armed"
+
+/* Renames our own loaded .so so Qt's plugin loader won't find it on the next
+ * Nickel start. The currently-running process keeps working fine — Linux
+ * doesn't care that the file backing a mapped library was renamed. */
+static void kterm_nh_disable_self(void) {
+    Dl_info info;
+    char disabled_path[PATH_MAX];
+    void *anchor;
+    int found;
+
+    /* POSIX guarantees dladdr() accepts a function pointer here even though
+     * ISO C forbids converting it to void*; -Wpedantic flags the cast. */
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
+    anchor = (void *)&kterm_nh_hook_lib;
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
+    found = dladdr(anchor, &info);
+    if (!found || !info.dli_fname) {
+        kterm_nh_log("watchdog: could not resolve own module path, cannot self-disable");
+        return;
+    }
+
+    if ((size_t)snprintf(disabled_path, sizeof(disabled_path), "%s.disabled", info.dli_fname) >= sizeof(disabled_path)) {
+        kterm_nh_log("watchdog: own module path too long, cannot self-disable");
+        return;
+    }
+
+    if (rename(info.dli_fname, disabled_path) == 0) {
+        kterm_nh_log("watchdog: boot loop detected, disabled: %s -> %s", info.dli_fname, disabled_path);
+    } else {
+        kterm_nh_log("watchdog: boot loop detected but rename of '%s' failed: %s", info.dli_fname, strerror(errno));
+    }
+}
+
+/* Forks a detached helper that sleeps delay_sec then clears the marker,
+ * confirming this boot survived. Double-forked so the sleeping grandchild is
+ * reparented to init and never needs reaping by us (or by Nickel). */
+static void kterm_nh_watchdog_arm(int delay_sec) {
+    pid_t pid = fork();
+
+    if (pid < 0) {
+        kterm_nh_log("watchdog: fork failed: %s", strerror(errno));
+        return;
+    }
+
+    if (pid == 0) {
+        pid_t gpid = fork();
+        if (gpid == 0) {
+            setsid();
+            sleep((unsigned int)delay_sec);
+            unlink(KTERM_WATCHDOG_MARKER);
+            _exit(0);
+        }
+        _exit(0);
+    }
+
+    waitpid(pid, NULL, 0);
+}
+
+/* Returns false if the module should stay inert for this run (boot loop
+ * detected, or the watchdog is disabled via failsafe_delay <= 0). */
+static bool kterm_nh_watchdog_check(int delay_sec) {
+    if (delay_sec <= 0) {
+        return true;
+    }
+
+    mkdir(KTERM_WATCHDOG_DIR, 0755);
+
+    if (!access(KTERM_WATCHDOG_MARKER, F_OK)) {
+        kterm_nh_log("watchdog: marker from a previous unconfirmed boot found; disabling module");
+        unlink(KTERM_WATCHDOG_MARKER);
+        kterm_nh_disable_self();
+        return false;
+    }
+
+    {
+        FILE *f = fopen(KTERM_WATCHDOG_MARKER, "w");
+        if (f) {
+            fclose(f);
+        } else {
+            kterm_nh_log("watchdog: could not create marker '%s': %s", KTERM_WATCHDOG_MARKER, strerror(errno));
+        }
+    }
+
+    kterm_nh_watchdog_arm(delay_sec);
+    return true;
+}
+
 __attribute__((constructor)) static void kterm_nh_bootstrap(void) {
     const struct nh *nh = &NickelHook;
     void *self = RTLD_DEFAULT;
@@ -194,18 +308,36 @@ __attribute__((constructor)) static void kterm_nh_bootstrap(void) {
         return;
     }
 
+    if (!kterm_nh_watchdog_check(nh->info->failsafe_delay)) {
+        kterm_nh_trace("watchdog disabled bootstrap for this run");
+        return;
+    }
+
     libnickel = dlopen("libnickel.so.1.0.0", RTLD_LAZY | RTLD_NODELETE);
     if (!libnickel) {
         kterm_nh_log("fatal: dlopen libnickel failed: %s", dlerror());
         return;
     }
 
-    for (struct nh_dlsym *v = nh->dlsym; v && v->name; v++) {
-        *v->out = dlsym(RTLD_DEFAULT, v->name);
-        if (!*v->out && !v->optional) {
-            kterm_nh_log("fatal: could not resolve symbol '%s': %s", v->name, dlerror());
-            goto rollback;
+    {
+        int dlsym_resolved = 0;
+        int dlsym_failed = 0;
+
+        for (struct nh_dlsym *v = nh->dlsym; v && v->name; v++) {
+            *v->out = dlsym(RTLD_DEFAULT, v->name);
+            if (!*v->out) {
+                if (!v->optional) {
+                    kterm_nh_log("fatal: could not resolve symbol '%s': %s", v->name, dlerror());
+                    goto rollback;
+                }
+                ++dlsym_failed;
+                kterm_nh_log("warning: optional symbol '%s' unresolved", v->name);
+                continue;
+            }
+            ++dlsym_resolved;
         }
+
+        kterm_nh_trace("dlsym resolved=%d failed_optional=%d", dlsym_resolved, dlsym_failed);
     }
 
     for (struct nh_hook *v = nh->hook; v && v->sym; v++) {

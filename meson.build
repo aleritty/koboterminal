@@ -21,7 +21,6 @@ libtsm_dep = libtsm_sub.get_variable('libtsm_dep')
 nickelhook_sources = files(
   'src/nh_runtime.c',
   'src/nickelhook.c',
-  'src/app.c',
   'src/pty_qt.c',
   'src/ui_dialog.cpp',
   'src/term_serialize.c',
@@ -39,11 +38,9 @@ if with_nickelhook
   ]
   nh_moc = qt5.preprocess(
     moc_headers: files('vendor/nickelhook/nhplugin.h'),
+    moc_sources: files('src/ui_dialog.cpp'),
     include_directories: [inc, nh_inc],
   )
-
-  nickelhook_cargs = ['-DKTERM_TARGET_KOBO=1']
-  nickelhook_cargs += ['-DKTERM_USE_NICKELHOOK=1']
 
   dependencies += libtsm_dep
   dependencies += qt_deps
@@ -52,7 +49,6 @@ if with_nickelhook
     'koboterminal',
     nickelhook_sources + nh_moc,
     include_directories: [inc, nh_inc],
-    c_args: nickelhook_cargs,
     dependencies: dependencies,
     link_args: ['-lutil', '-lm', '-ldl'],
     install: true,

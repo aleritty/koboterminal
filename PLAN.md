@@ -133,7 +133,7 @@ Phase 3: Validation (verify it works)
 
 | File | Action | Purpose |
 |------|--------|---------|
-| `deploy/nickelmenu.conf` | **Create** | NickelMenu config with "Terminal" menu entry |
+| `packaging/nickelmenu.conf` | **Create** | NickelMenu config with "Terminal" menu entry |
 | `src/nickelhook.c` | **Modify** | Add file-watcher thread, symbol resolution logging |
 | `src/term_serialize.c` | **Modify** | Implement `kterm_serialize_screen()` using `tsm_screen_draw` |
 | `src/ui_dialog.c` | **Modify** | Add input handling, dialog close cleanup |

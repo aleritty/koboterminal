@@ -21,7 +21,6 @@ extern "C" {
  */
 void kterm_log_info(const char *fmt, ...);
 void kterm_log_error(const char *fmt, ...);
-void kterm_log(const char *fmt, ...);
 
 /*
  * NickelHook integration for KoboTerminal.
@@ -122,7 +121,6 @@ extern struct nh NickelHook;
  * These are typedef'd in NickelDBus for convenience.
  */
 typedef struct ConfirmationDialog ConfirmationDialog;
-typedef int KeyboardScript; /* enum */
 typedef struct TouchLineEdit TouchLineEdit;
 typedef struct N3ConfirmationTextEditField N3ConfirmationTextEditField;
 
@@ -134,18 +132,12 @@ typedef struct N3ConfirmationTextEditField N3ConfirmationTextEditField;
 /* ConfirmationDialogFactory methods */
 typedef ConfirmationDialog *(
     *ConfirmationDialogFactory_getConfirmationDialog_t)(void *parent);
-typedef void (*ConfirmationDialogFactory_showTextEditDialog_t)(
-    const void *title);
 
 /* ConfirmationDialog methods (static methods on the class) */
 typedef void (*ConfirmationDialog__setTitle_t)(ConfirmationDialog *_this,
                                                const void *title);
 typedef void (*ConfirmationDialog__setText_t)(ConfirmationDialog *_this,
                                               const void *text);
-typedef void (*ConfirmationDialog__setAcceptButtonText_t)(
-    ConfirmationDialog *_this, const void *text);
-typedef void (*ConfirmationDialog__setRejectButtonText_t)(
-    ConfirmationDialog *_this, const void *text);
 typedef void (*ConfirmationDialog__showCloseButton_t)(ConfirmationDialog *_this,
                                                       bool show);
 typedef void (*ConfirmationDialog__setRejectOnOutsideTap_t)(
@@ -155,10 +147,7 @@ typedef void (*ConfirmationDialog__addWidget_t)(ConfirmationDialog *_this,
 typedef void (*ConfirmationDialog__show_t)(ConfirmationDialog *_this);
 typedef void (*ConfirmationDialog__close_t)(ConfirmationDialog *_this);
 
-/* N3ConfirmationTextEditField constructors */
-typedef N3ConfirmationTextEditField *(*N3ConfirmationTextEditField_ctor_t)(
-    N3ConfirmationTextEditField *_this, ConfirmationDialog *dlg,
-    KeyboardScript ks);
+/* N3ConfirmationTextEditField constructor (without KeyboardScript) */
 typedef N3ConfirmationTextEditField *(*N3ConfirmationTextEditField_ctor2_t)(
     N3ConfirmationTextEditField *_this, ConfirmationDialog *dlg);
 
@@ -167,12 +156,9 @@ typedef TouchLineEdit *(*N3ConfirmationTextEditField_textEdit_t)(
     N3ConfirmationTextEditField *_this);
 
 /* TouchLineEdit methods */
-typedef void (*TouchLineEdit__setPlaceholderText_t)(TouchLineEdit *_this,
-                                                    const void *text);
 typedef void (*TouchLineEdit__setText_t)(TouchLineEdit *_this,
                                          const void *text);
 typedef void (*TouchLineEdit__setFocus_t)(TouchLineEdit *_this);
-typedef const char *(*TouchLineEdit__text_t)(TouchLineEdit *_this);
 
 /* ============================================================================
  * Resolved Nickel C++ method pointers (defined in nickelhook.c)
@@ -186,10 +172,6 @@ extern ConfirmationDialogFactory_getConfirmationDialog_t
 /* ConfirmationDialog methods */
 extern ConfirmationDialog__setTitle_t ConfirmationDialog__setTitle;
 extern ConfirmationDialog__setText_t ConfirmationDialog__setText;
-extern ConfirmationDialog__setAcceptButtonText_t
-    ConfirmationDialog__setAcceptButtonText;
-extern ConfirmationDialog__setRejectButtonText_t
-    ConfirmationDialog__setRejectButtonText;
 extern ConfirmationDialog__showCloseButton_t
     ConfirmationDialog__showCloseButton;
 extern ConfirmationDialog__setRejectOnOutsideTap_t
@@ -198,29 +180,18 @@ extern ConfirmationDialog__addWidget_t ConfirmationDialog__addWidget;
 extern ConfirmationDialog__show_t ConfirmationDialog__show;
 extern ConfirmationDialog__close_t ConfirmationDialog__close;
 
-/* N3ConfirmationTextEditField constructors */
-extern N3ConfirmationTextEditField_ctor_t N3ConfirmationTextEditField_ctor;
+/* N3ConfirmationTextEditField constructor */
 extern N3ConfirmationTextEditField_ctor2_t N3ConfirmationTextEditField_ctor2;
 extern N3ConfirmationTextEditField_textEdit_t
     N3ConfirmationTextEditField_textEdit;
 
 /* TouchLineEdit methods */
-extern TouchLineEdit__setPlaceholderText_t TouchLineEdit__setPlaceholderText;
 extern TouchLineEdit__setText_t TouchLineEdit__setText;
 extern TouchLineEdit__setFocus_t TouchLineEdit__setFocus;
-extern TouchLineEdit__text_t TouchLineEdit__text;
 
 /* Dialog and input field instances */
 extern ConfirmationDialog *kterm_dialog;
 extern N3ConfirmationTextEditField *kterm_input_field;
-extern int kterm_dialog_visible;
-
-/*
- * Initialize the NickelHook module.
- * Resolves all Nickel symbols, initializes PTY.
- * Returns 0 on success, -1 on failure.
- */
-int kterm_nhook_init(void);
 
 /*
  * Create and show the terminal dialog.

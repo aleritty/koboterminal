@@ -1,26 +1,16 @@
 /*
- * KoboTerminal PTY Backend (Qt Integration)
+ * KoboTerminal PTY Backend
  *
- * This file provides PTY management integrated with Nickel's Qt event loop.
- * Instead of polling in a standalone loop, we use QSocketNotifier to
- * receive notifications when the PTY master FD has data available.
- *
- * The PTY lifecycle:
- *   1. forkpty() creates a PTY pair
- *   2. Child process execs /bin/sh on the slave side
- *   3. Parent (this module) registers master FD with QSocketNotifier
- *   4. On data available: read from master, feed to TSM, update dialog
- *   5. On user input: write to master FD
- *
- * Note: QSocketNotifier is declared here but the actual Qt integration
- * (signal connections, slot implementations) lives in ui_signals.c.
- * This file focuses on PTY management.
+ * PTY lifecycle (fork/read/write/teardown), fd kept non-blocking for the
+ * QSocketNotifier that ui_dialog.cpp attaches to it. No polling loop here —
+ * the notifier and Qt signal/slot wiring live in ui_dialog.cpp.
  */
 
 #define _GNU_SOURCE
 
 #include "kterm/pty.h"
 #include "kterm/nickelhook.h"
+#include "kterm/term.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -29,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -44,6 +35,12 @@ static int kterm_pty_running = 0;
 /* Shell path */
 static const char *kterm_pty_shell = "/bin/sh";
 
+/* Terminal grid size: must match the winsize handed to the kernel PTY so
+ * full-screen apps (vi, top) size themselves correctly. Placeholder until
+ * sized from the dialog's actual pixel/font metrics. */
+#define KTERM_COLS 60
+#define KTERM_ROWS 20
+
 /* ============================================================================
  * PTY lifecycle
  * ============================================================================ */
@@ -51,16 +48,25 @@ static const char *kterm_pty_shell = "/bin/sh";
 int kterm_pty_qt_init(void) {
     pid_t pid;
     int flags;
+    struct winsize ws = {0};
 
     /* Reset state */
     kterm_pty_master_fd = -1;
     kterm_pty_child_pid = 0;
     kterm_pty_running = 0;
 
+    if (kterm_term_global_init(KTERM_COLS, KTERM_ROWS) != 0) {
+        kterm_log_error("[koboterminal] terminal init failed\n");
+        return -1;
+    }
+
     /* Create PTY pair and fork child */
-    pid = forkpty(&kterm_pty_master_fd, NULL, NULL, NULL);
+    ws.ws_col = KTERM_COLS;
+    ws.ws_row = KTERM_ROWS;
+    pid = forkpty(&kterm_pty_master_fd, NULL, NULL, &ws);
     if (pid < 0) {
         kterm_log_error("[koboterminal] forkpty() failed: %s\n", strerror(errno));
+        kterm_term_global_deinit();
         return -1;
     }
     kterm_log_info("[koboterminal] forkpty() succeeded, child_pid=%d\n", pid);
@@ -116,6 +122,8 @@ void kterm_pty_qt_deinit(void) {
         kterm_pty_master_fd = -1;
     }
 
+    kterm_term_global_deinit();
+
     kterm_log_info("[koboterminal] PTY deinitialized\n");
 }
 
@@ -162,6 +170,10 @@ int kterm_pty_qt_write(const char *text, size_t len) {
     }
 
     return (int)nwritten;
+}
+
+int kterm_pty_qt_get_fd(void) {
+    return kterm_pty_master_fd;
 }
 
 int kterm_pty_qt_is_running(void) {

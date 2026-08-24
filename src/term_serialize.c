@@ -1,15 +1,12 @@
 /*
  * KoboTerminal TSM Screen Serialization
  *
- * This file provides functions to serialize the TSM terminal screen state
- * to plain text for display in the Nickel dialog. It handles:
- *   - Extracting character grid from tsm_screen
- *   - Stripping colors and attributes
- *   - Truncating to last N lines (scrollback)
- *   - Sanitizing output for Qt QString compatibility
+ * Serializes the TSM terminal screen state to plain text for display in the
+ * Nickel dialog: walks the character grid via tsm_screen_draw(), stripping
+ * colors/attributes down to plain UTF-8 text.
  *
- * The serialization is called on every PTY data arrival to update
- * the dialog body with the current terminal state.
+ * Called from ui_dialog.cpp on every PTY data arrival to refresh the dialog
+ * body with the current terminal state.
  */
 
 #define _GNU_SOURCE
@@ -18,86 +15,108 @@
 
 #include <libtsm.h>
 
-#include <ctype.h>
-#include <stdio.h>
-#include <string.h>
-
-/* ============================================================================
- * Forward declarations
- * ============================================================================ */
-
-/* Global terminal state (shared with term_tsm.c) */
-static struct kterm_term kterm_global_term;
-
 /* ============================================================================
  * Screen serialization
  * ============================================================================ */
 
+/* Accumulator passed through tsm_screen_draw's per-cell callback */
+struct kterm_draw_ctx {
+    char *out;
+    size_t cap;
+    size_t pos;
+    unsigned int row;
+};
+
+static void kterm_draw_put(struct kterm_draw_ctx *ctx, char c) {
+    if (ctx->pos + 1 < ctx->cap) {
+        ctx->out[ctx->pos++] = c;
+    }
+}
+
+static void kterm_draw_put_utf8(struct kterm_draw_ctx *ctx, uint32_t cp) {
+    if (cp < 0x80) {
+        kterm_draw_put(ctx, (char)cp);
+    } else if (cp < 0x800) {
+        kterm_draw_put(ctx, (char)(0xC0 | (cp >> 6)));
+        kterm_draw_put(ctx, (char)(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        kterm_draw_put(ctx, (char)(0xE0 | (cp >> 12)));
+        kterm_draw_put(ctx, (char)(0x80 | ((cp >> 6) & 0x3F)));
+        kterm_draw_put(ctx, (char)(0x80 | (cp & 0x3F)));
+    } else {
+        kterm_draw_put(ctx, (char)(0xF0 | (cp >> 18)));
+        kterm_draw_put(ctx, (char)(0x80 | ((cp >> 12) & 0x3F)));
+        kterm_draw_put(ctx, (char)(0x80 | ((cp >> 6) & 0x3F)));
+        kterm_draw_put(ctx, (char)(0x80 | (cp & 0x3F)));
+    }
+}
+
+/* tsm_screen_draw callback: called once per visible cell, in row-major order */
+static int kterm_draw_cb(struct tsm_screen *con, uint64_t id, const uint32_t *ch,
+                          size_t len, unsigned int width, unsigned int posx,
+                          unsigned int posy, const struct tsm_screen_attr *attr,
+                          tsm_age_t age, void *data) {
+    struct kterm_draw_ctx *ctx = data;
+
+    (void)con;
+    (void)id;
+    (void)width;
+    (void)posx;
+    (void)attr;
+    (void)age;
+
+    if (posy != ctx->row) {
+        kterm_draw_put(ctx, '\n');
+        ctx->row = posy;
+    }
+
+    if (len == 0) {
+        /* Empty/blank cell */
+        kterm_draw_put(ctx, ' ');
+        return 0;
+    }
+
+    /* Only the base codepoint is kept; combining marks (ch[1..]) are dropped
+     * since the output is a plain-text approximation, not a faithful replay. */
+    kterm_draw_put_utf8(ctx, ch[0]);
+    return 0;
+}
+
 /*
  * Serialize the TSM screen to plain text.
  *
- * This function extracts the character grid from the tsm_screen,
- * strips all ANSI color/attribute codes, and produces a plain text
- * buffer suitable for display in the Nickel ConfirmationDialog.
+ * Walks the current screen grid via tsm_screen_draw() and produces a plain
+ * UTF-8 text buffer (colors/attributes stripped) suitable for display in the
+ * Nickel ConfirmationDialog.
  *
- * Parameters:
- *   - screen: tsm_screen pointer (from kterm_term_get_screen)
- *   - output: buffer to write serialized text to
- *   - out_cap: capacity of output buffer
- *
- * Returns:
- *   - Number of bytes written to output (excluding null terminator)
- *   - -1 on error
+ * Returns the number of bytes written to output (excluding the null
+ * terminator), or -1 on error.
  */
 static int kterm_serialize_screen(struct tsm_screen *screen, char *output, size_t out_cap) {
-    unsigned int width, height;
+    struct kterm_draw_ctx ctx;
 
     if (!screen || !output || out_cap == 0) {
         return -1;
     }
 
-    /* Get screen dimensions */
-    width = tsm_screen_get_width(screen);
-    height = tsm_screen_get_height(screen);
+    ctx.out = output;
+    ctx.cap = out_cap;
+    ctx.pos = 0;
+    ctx.row = 0;
 
-    if (width <= 0 || height <= 0) {
-        return 0;
-    }
+    tsm_screen_draw(screen, kterm_draw_cb, &ctx);
 
-    /* TODO: Implement proper screen serialization using tsm_screen_draw callback */
-    /* For now, just return empty - the scrollback buffer is passed separately */
-    (void)width;
-    (void)height;
-    (void)screen;
-    (void)out_cap;
-
-    output[0] = '\0';
-    return 0;
+    output[ctx.pos] = '\0';
+    return (int)ctx.pos;
 }
 
 /* ============================================================================
  * Public API: Serialize terminal output
  * ============================================================================ */
 
-/*
- * Serialize the terminal screen to plain text.
- *
- * This is the public entry point called from ui_signals.c on PTY data arrival.
- * It serializes the current TSM screen state and returns the text.
- *
- * Parameters:
- *   - scrollback: raw PTY output buffer (for reference)
- *   - scrollback_len: length of scrollback buffer
- *   - output: buffer to write serialized text to
- *   - out_cap: capacity of output buffer
- *
- * Returns:
- *   - Number of bytes written to output
- *   - -1 on error
- */
-int kterm_term_serialize(const char *scrollback, size_t scrollback_len, char *output, size_t out_cap) {
+int kterm_term_serialize(char *output, size_t out_cap) {
+    struct kterm_term *term;
     struct tsm_screen *screen;
-    int written;
 
     if (!output || out_cap == 0) {
         return -1;
@@ -105,21 +124,13 @@ int kterm_term_serialize(const char *scrollback, size_t scrollback_len, char *ou
 
     output[0] = '\0';
 
-    /* Get the TSM screen from global terminal state */
-    screen = kterm_global_term.screen;
+    term = kterm_term_global();
+    screen = term ? kterm_term_get_screen(term) : NULL;
     if (!screen) {
-        /* Fallback: use scrollback buffer directly */
-        if (scrollback && scrollback_len < out_cap) {
-            memcpy(output, scrollback, scrollback_len);
-            output[scrollback_len] = '\0';
-        }
-        return (int)scrollback_len;
+        return 0;
     }
 
-    /* Serialize screen to plain text */
-    written = kterm_serialize_screen(screen, output, out_cap);
-    (void)written;
-    return written;
+    return kterm_serialize_screen(screen, output, out_cap);
 }
 
 
