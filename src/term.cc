@@ -13,6 +13,7 @@
 #include <QCoreApplication>
 #include <QFontMetrics>
 #include <QMouseEvent>
+#include <QPaintEvent>
 #include <QPainter>
 #include <QSocketNotifier>
 
@@ -69,7 +70,11 @@ KtTerm::KtTerm(QFont const& f, int cols, int rows, QWidget *parent) : QWidget(pa
     QFontMetrics fm(font);
     cw = fm.width(QLatin1Char('M'));
     ch = fm.height();
-    setFixedSize(cols * cw, rows * ch);
+    hint = QSize(cols * cw, rows * ch);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    setMinimumWidth(20 * cw);
+    setFixedHeight(hint.height());
+    resize(hint); // when not in a layout
     setFocusPolicy(Qt::NoFocus);
     setAttribute(Qt::WA_OpaquePaintEvent);
 
@@ -318,8 +323,9 @@ void KtTerm::repaintDirty() {
         update(dirty);
 }
 
-void KtTerm::paintEvent(QPaintEvent *) {
+void KtTerm::paintEvent(QPaintEvent *e) {
     QPainter p(this); // clipped to the dirty rect, so only changed cells hit the e-ink
+    p.fillRect(e->rect(), Qt::white); // the strip right/below the last full cell
     DrawCtx c = {&p, nullptr, 0, cw, ch, &font, &bold};
     tsm_screen_draw(screen, kt_draw_cell, &c);
 }

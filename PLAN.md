@@ -31,8 +31,11 @@ ConfirmationDialog (Nickel's own, via dlsym — symbols copied from NickelDBus)
   + key rows (addWidget)         -> Termux layout: Esc / - Home ↑ End PgUp | Tab Ctrl Alt ← ↓ → PgDn,
                                     plus a tall ⌨ key that shows/hides Nickel's keyboard
   + KtWifiKeepAlive              -> vetoes WirelessWatchdog::aboutToKillWifi while open
-  + KtFit                        -> terminal rows grow/shrink so the dialog ends at the
-                                    keyboard's top edge (screen bottom when it's hidden)
+  + KtFit                        -> terminal height (pixel-exact) so the dialog ends at the
+                                    keyboard's top edge (screen bottom when it's hidden);
+                                    width follows the layout, cols/rows = size / cell size
+  + kt_flatten                   -> zero layout margins up to the dialog, hide the empty
+                                    header above the terminal (only when the X is gone)
   PlugWorkflowManager::aboutToConnect (USB storage) -> dialog reject() -> session killed
 ```
 

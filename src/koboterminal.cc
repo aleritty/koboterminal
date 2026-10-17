@@ -109,7 +109,7 @@ static QWidget *kt_find_keyboard(QWidget *dialog) {
 
 // The keys Nickel's keyboard lacks, in Termux's default extra-keys layout,
 // plus a tall key on the right that shows/hides Nickel's keyboard.
-static KtMods kt_keys(QWidget *box, KtTerm *term, QFont const& font, QWidget *dialog, QObject *field) {
+static KtMods kt_keys(QWidget *box, KtTerm *term, QFont const& font, int keyHeight, QWidget *dialog, QObject *field) {
     static const struct { const char *label, *text; uint32_t keysym; } keys[2][7] = {
         {{"Esc", "\x1b", 0}, {"/", "/", 0}, {"-", "-", 0}, {"Home", 0, XKB_KEY_Home},
          {"\u2191", 0, XKB_KEY_Up}, {"End", 0, XKB_KEY_End}, {"PgUp", 0, XKB_KEY_Page_Up}},
@@ -121,8 +121,8 @@ static KtMods kt_keys(QWidget *box, KtTerm *term, QFont const& font, QWidget *di
     grid->setSpacing(4);
     // Nickel's button style has wide padding and minimum widths; override it so
     // all 7 columns fit the terminal's width.
-    box->setStyleSheet(QStringLiteral("QPushButton { padding: 0px; margin: 0px; min-width: 0px; min-height: 0px; }"));
-    int h = QFontMetrics(font).height() * 3 / 2;
+    box->setStyleSheet(QStringLiteral("QPushButton { padding: 0px; margin: 0px; min-width: 0px; }"));
+    int h = qMax(QFontMetrics(font).height() * 2, keyHeight); // a real touch target
     KtMods mods = {nullptr, nullptr};
     QPushButton *b[2][7];
     for (int r = 0; r < 2; r++) {
@@ -162,6 +162,28 @@ static KtMods kt_keys(QWidget *box, KtTerm *term, QFont const& font, QWidget *di
         }
     }
     return mods;
+}
+
+// Gives the terminal the whole dialog: zero inner margins on every layout from
+// the terminal up to the dialog, and hide whatever sits above the terminal in
+// those layouts (the empty title/close header). Only used once the X is gone.
+static void kt_flatten(QWidget *dialog, QWidget *term, QWidget *field, QWidget *keys) {
+    QWidget *child = term;
+    for (QWidget *w = term->parentWidget(); w; w = (w == dialog) ? nullptr : w->parentWidget()) {
+        QLayout *l = w->layout();
+        if (!l) {
+            child = w;
+            continue;
+        }
+        l->setContentsMargins(0, 0, 0, 0);
+        l->setSpacing(0);
+        for (int i = 0, n = l->indexOf(child); i < n; i++) {
+            QWidget *above = l->itemAt(i)->widget();
+            if (above && above != field && above != keys && !strstr(above->metaObject()->className(), "Keyboard"))
+                above->hide();
+        }
+        child = w;
+    }
 }
 
 // Logs the dialog's widget tree once, to tune the layout from real devices.
@@ -228,12 +250,13 @@ private:
         }
         if (passes++ >= 4)
             return;
+        // Every spare pixel goes to the terminal (rows = height / cell height;
+        // the remainder is blank), so the dialog ends right at the keyboard.
         int limit = keyboard->isVisible() ? keyboard->mapToGlobal(QPoint(0, 0)).y() : screenHeight;
-        int spare = limit - keys->mapToGlobal(QPoint(0, keys->height())).y() - term->cellHeight() / 2;
-        int ch = term->cellHeight();
-        int rows = qMax(3, term->rows() + (spare >= 0 ? spare / ch : -((-spare + ch - 1) / ch)));
-        if (rows != term->rows())
-            term->setRows(rows);
+        int spare = limit - keys->mapToGlobal(QPoint(0, keys->height())).y() - 2; // 2: the dialog's border
+        int h = qMax(3 * term->cellHeight(), term->height() + spare);
+        if (h != term->height())
+            term->setFixedHeight(h);
     }
 };
 
@@ -297,8 +320,7 @@ static void kt_open() {
     // keep the X and the visible field, or the modal dialog could trap the user.
     bool canTap = tle->metaObject()->indexOfSignal("tapped()") >= 0;
     ConfirmationDialog__showCloseButton(d, !canTap);
-    KtMods mods = kt_keys(row, term, kt_font(mono.pixelSize() * 3 / 4), d, canTap ? tle : nullptr);
-    row->setFixedWidth(term->width());
+    KtMods mods = kt_keys(row, term, kt_font(mono.pixelSize() * 3 / 4), scr.height() / 24, d, canTap ? tle : nullptr);
     ConfirmationDialog__addWidget(d, row);
     new KtFit(d, term, row, scr.height());
 
@@ -318,6 +340,7 @@ static void kt_open() {
                 l->insertWidget(i, term);
             }
         }
+        kt_flatten(d, term, tef, row);
     } else {
         nh_log("TouchLineEdit has no tapped() signal; keeping the text field visible");
     }

@@ -20,7 +20,8 @@ struct tsm_vte;
 // stay small.
 class KtTerm : public QWidget {
 public:
-    // cols x rows is the initial grid; font sets the cell size.
+    // cols x rows is the initial grid; font sets the cell size. The width then
+    // follows the layout (cols = width / cell width), the height is set by the caller.
     KtTerm(QFont const& font, int cols, int rows, QWidget *parent = nullptr);
     ~KtTerm();
 
@@ -30,9 +31,8 @@ public:
     // Ctrl/Alt combos. For text, keysym = ASCII code (0 if none) and unicode = the char.
     void sendKey(uint32_t keysym, unsigned mods = 0, uint32_t unicode = 0xffffffff);
     QPointer<QObject> exitTarget;              // gets reject() when the shell exits
-    int rows() const { return height() / ch; }
     int cellHeight() const { return ch; }
-    void setRows(int rows) { setFixedHeight(rows * ch); } // resizeEvent updates the grid and the PTY
+    QSize sizeHint() const override { return hint; }
     QPointer<QObject> tapTarget;               // gets tapped() on a tap (opens Nickel's keyboard)
 
 protected:
@@ -53,6 +53,7 @@ private:
     uint_fast32_t lastAge = 0; // tsm_age_t at the last repaint
     QFont font, bold;
     int cw, ch;             // cell size in pixels
+    QSize hint;             // initial grid size in pixels
     QPoint pressPos;        // where the current touch started
     bool scrolled = false;  // viewing scrollback
 
