@@ -15,3 +15,4 @@ compile_commands.json
 /NickelHook/*.o
 /NickelHook/*.moc
 /dist/
+*.o

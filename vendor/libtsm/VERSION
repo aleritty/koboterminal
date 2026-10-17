@@ -1,0 +1,2 @@
+libtsm 6ef38081955dce12ed4b13dd74db91bb9d4e4cb1 from https://github.com/Aetf/libtsm
+Local change: libtsm-int.h SHL_EXPORT is overridable (we build with -DSHL_EXPORT= to keep tsm_* private inside Nickel).

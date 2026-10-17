@@ -1,21 +1,21 @@
 #include <fcntl.h>
-#include <signal.h>
-#include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <QDialog>
 #include <QGuiApplication>
-#include <QScreen>
+#include <QHBoxLayout>
 #include <QLineEdit>
-#include <QPlainTextEdit>
 #include <QPointer>
-#include <QProcess>
+#include <QPushButton>
+#include <QScreen>
 #include <QSocketNotifier>
 #include <QString>
-#include <QTimer>
 
 #include <NickelHook.h>
+#include <xkbcommon/xkbcommon-keysyms.h>
+
+#include "term.h"
 
 #define KT_FIFO "/tmp/koboterminal.fifo"
 
@@ -38,38 +38,28 @@ static QLineEdit *(*N3ConfirmationTextEditField__textEdit)(N3ConfirmationTextEdi
 
 static QPointer<ConfirmationDialog> kt_dlg;
 
-// The shell gets its own session, so closing the terminal kills everything it
-// started (a forgotten `ping` or busy loop would otherwise drain the battery).
-// Output is coalesced and capped: e-ink refreshes at most 4x/s, and a flood
-// like `cat /dev/zero` can't eat Nickel's memory or GUI thread.
-class KtShell : public QProcess {
-public:
-    QByteArray buf;
-    bool truncated = false;
-    QTimer flush;
-    pid_t pgid = 0; // kept after sh exits, so its background jobs still get killed
-    explicit KtShell(QObject *parent) : QProcess(parent) {
-        connect(this, &QProcess::started, [this]() { pgid = pid(); });
-        flush.setSingleShot(true);
-        flush.setInterval(250);
-        connect(this, &QProcess::readyRead, [this]() {
-            buf += readAll();
-            if (buf.size() > 16384) {
-                buf = buf.right(16384);
-                truncated = true;
-            }
-            if (!flush.isActive())
-                flush.start();
-        });
-    }
-    ~KtShell() {
-        disconnect(); // finished()/readyRead must not reach the half-destroyed dialog
-        if (pgid > 0)
-            ::kill(-pgid, SIGKILL);
-    }
-protected:
-    void setupChildProcess() { setsid(); }
-};
+// Builds the row of keys Nickel's keyboard lacks. Ctrl is sticky: it applies
+// to the next typed character.
+static QPushButton *kt_keys(QWidget *row, KtTerm *term) {
+    QHBoxLayout *l = new QHBoxLayout(row);
+    l->setContentsMargins(0, 0, 0, 0);
+    auto key = [l](const char *label) {
+        QPushButton *b = new QPushButton(QString::fromUtf8(label));
+        b->setFocusPolicy(Qt::NoFocus); // keep the keyboard attached to the field
+        l->addWidget(b);
+        return b;
+    };
+    QPushButton *ctrl = key("Ctrl");
+    ctrl->setCheckable(true);
+    QObject::connect(key("^C"), &QPushButton::clicked, [term]() { term->send("\x03"); });
+    QObject::connect(key("Esc"), &QPushButton::clicked, [term]() { term->send("\x1b"); });
+    QObject::connect(key("Tab"), &QPushButton::clicked, [term]() { term->send("\t"); });
+    QObject::connect(key("Left"), &QPushButton::clicked, [term]() { term->sendKey(XKB_KEY_Left); });
+    QObject::connect(key("Down"), &QPushButton::clicked, [term]() { term->sendKey(XKB_KEY_Down); });
+    QObject::connect(key("Up"), &QPushButton::clicked, [term]() { term->sendKey(XKB_KEY_Up); });
+    QObject::connect(key("Right"), &QPushButton::clicked, [term]() { term->sendKey(XKB_KEY_Right); });
+    return ctrl;
+}
 
 static void kt_open() {
     if (kt_dlg)
@@ -87,6 +77,7 @@ static void kt_open() {
         return;
     d->hide();
     kt_dlg = d;
+    QObject::connect(d, &QDialog::rejected, d, &QObject::deleteLater); // ~KtTerm kills the shell's session
 
     // Nickel's field brings up its on-screen keyboard. The real object size is
     // unknown, so over-allocate like NickelDBus does; it is parented to the dialog.
@@ -101,63 +92,65 @@ static void kt_open() {
         d->deleteLater();
         return;
     }
-    // Keyboard "Go" behaves like the Run button.
+    // Keyboard "Go" behaves like the Enter button.
     if (!QObject::connect(tef, SIGNAL(commitRequested()), d, SIGNAL(accepted())))
         nh_log("could not connect commitRequested");
 
-    QPlainTextEdit *out = new QPlainTextEdit();
-    out->setReadOnly(true);
-    out->setFocusPolicy(Qt::NoFocus);
-    out->setMaximumBlockCount(1000);
     // ponytail: sizes are screen fractions, tune on device if text is too small/big.
     QSize scr = QGuiApplication::primaryScreen()->size();
     QFont mono(QStringLiteral("Courier"));
     mono.setStyleHint(QFont::TypeWriter);
-    mono.setPixelSize(scr.width() / 40); // ~40 columns wide
-    out->setFont(mono);
-    out->setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
-    out->setMinimumSize(scr.width() * 9 / 10, scr.height() * 2 / 5);
-    out->setStyleSheet(QStringLiteral("QPlainTextEdit { background: white; color: black; border: 2px solid black; }"));
-    ConfirmationDialog__addWidget(d, out);
+    mono.setPixelSize(scr.width() / 45);
+    QFontMetrics fm(mono);
+    KtTerm *term = new KtTerm(mono, scr.width() * 9 / 10 / fm.width(QLatin1Char('M')), scr.height() * 2 / 5 / fm.height());
+    term->exitTarget = d;
+    ConfirmationDialog__addWidget(d, term);
+
+    QWidget *row = new QWidget();
+    QPushButton *ctrl = kt_keys(row, term);
+    ConfirmationDialog__addWidget(d, row);
 
     ConfirmationDialog__setTitle(d, QStringLiteral("KoboTerminal"));
-    ConfirmationDialog__setAcceptButtonText(d, QStringLiteral("Run"));
+    ConfirmationDialog__setAcceptButtonText(d, QStringLiteral("Enter"));
     ConfirmationDialog__setRejectButtonText(d, QStringLiteral("Close"));
     ConfirmationDialog__setRejectOnOutsideTap(d, false);
     ConfirmationDialog__showCloseButton(d, true);
 
-    // One persistent shell, so cd/exports carry over between commands.
-    KtShell *sh = new KtShell(d);
-    sh->setProcessChannelMode(QProcess::MergedChannels);
-    sh->setWorkingDirectory(QStringLiteral("/")); // never hold /mnt/onboard busy (USB sharing)
-    auto append = [out](QString const& s) {
-        if (out->document()->characterCount() > 100000) // maxBlockCount can't cap one endless line
-            out->clear();
-        out->moveCursor(QTextCursor::End);
-        out->insertPlainText(s);
-        out->ensureCursorVisible();
-    };
-    // Context `out`: auto-disconnects if Nickel destroys the dialog first.
-    QObject::connect(&sh->flush, &QTimer::timeout, out, [sh, append]() {
-        if (sh->truncated)
-            append(QStringLiteral("[...]\n"));
-        append(QString::fromUtf8(sh->buf));
-        sh->buf.clear();
-        sh->truncated = false;
+    // Keys go to the shell as they are typed. The field always holds one
+    // sentinel space, so backspace on an "empty" line still changes the text.
+    static const QString S = QStringLiteral(" ");
+    tle->setText(S);
+    QObject::connect(tle, &QLineEdit::textChanged, term, [tle, term, ctrl](QString const& t) {
+        if (t == S)
+            return;
+        if (t.isEmpty()) {
+            term->send("\x7f");
+        } else {
+            QString in = t.endsWith(S) ? t.left(t.size() - 1) : t.startsWith(S) ? t.mid(1) : t;
+            QByteArray b = in.toUtf8();
+            if (ctrl->isChecked() && !b.isEmpty()) {
+                ctrl->setChecked(false);
+                uchar c = QChar(QLatin1Char(b[0])).toUpper().toLatin1();
+                if (c >= '@' && c <= '_')
+                    b[0] = c & 0x1f;
+            }
+            term->send(b);
+        }
+        tle->blockSignals(true);
+        tle->setText(S);
+        tle->blockSignals(false);
     });
-    QObject::connect(sh, static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished), d, &QDialog::reject);
-
-    QObject::connect(d, &QDialog::accepted, [d, tle, sh, append]() {
-        if (!d->isVisible()) // in case this firmware's Run button calls accept()
+    QObject::connect(d, &QDialog::accepted, term, [d, term]() {
+        if (!d->isVisible()) // in case this firmware's Enter button calls accept()
             d->open();
-        QString cmd = tle->text();
-        tle->clear();
-        append(QStringLiteral("$ ") + cmd + QStringLiteral("\n"));
-        sh->write((cmd + QStringLiteral("\n")).toUtf8());
+        term->send("\r");
     });
-    QObject::connect(d, &QDialog::rejected, d, &QObject::deleteLater); // ~KtShell kills the shell
 
-    sh->start(QStringLiteral("/bin/sh"));
+    if (!term->start()) {
+        ConfirmationDialogFactory_showOKDialog(QStringLiteral("KoboTerminal"), QStringLiteral("Could not start the shell."));
+        d->deleteLater();
+        return;
+    }
     d->setModal(true);
     d->open();
 }

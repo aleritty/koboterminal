@@ -2,11 +2,12 @@
 
 A terminal dialog for Kobo e-readers, opened from [NickelMenu](https://github.com/pgaskin/NickelMenu).
 It is a [NickelHook](https://github.com/pgaskin/NickelHook) mod: it runs inside Nickel and uses
-Nickel's own dialog and on-screen keyboard. Commands run in one persistent `/bin/sh`, so `cd`
-and exported variables carry over between commands.
+Nickel's own dialog and on-screen keyboard. The shell runs on a real PTY and output is parsed by
+[libtsm](https://github.com/Aetf/libtsm), so `vi`, `top`, `less`, job control and `^C` work.
+Keys are sent as you type; a row of buttons adds Ctrl (sticky), ^C, Esc, Tab and arrows.
 
-There is no PTY and no escape-sequence handling. Interactive full-screen programs (`vi`, `top`)
-will not work.
+Closing the dialog kills every process the shell started. Use `setsid cmd &` to keep a
+daemon running after you close it. Colours are ignored (e-ink); inverse video is kept.
 
 ## Install
 
@@ -32,4 +33,4 @@ See [PLAN.md](PLAN.md) for the design and for why the earlier attempts failed.
 
 ## License
 
-MIT. NickelHook is MIT, by Patrick Gaskin.
+MIT. NickelHook is MIT (Patrick Gaskin). libtsm is MIT, except its hash table (`vendor/libtsm/src/shared/shl-htable.*`), which is LGPL-2.1 (from CCAN).

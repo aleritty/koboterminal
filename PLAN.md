@@ -26,12 +26,12 @@ libkoboterminal.so  (real NickelHook, /usr/local/Kobo/imageformats/)
         |
 ConfirmationDialog (Nickel's own, via dlsym — symbols copied from NickelDBus)
   + N3ConfirmationTextEditField  -> Nickel on-screen keyboard
-  + QPlainTextEdit (addWidget)   -> output
-  + QProcess("/bin/sh")          -> one persistent shell, stdin/stdout pipes
+  + KtTerm (addWidget)           -> forkpty("/bin/sh") + libtsm, grid repainted per dirty cell
+  + key row (addWidget)          -> Ctrl, ^C, Esc, Tab, arrows
 ```
 
-No PTY / VT parser: e-ink + on-screen keyboard make full-screen TUIs
-pointless; a piped `sh` keeps `cd`/env state between commands.
+Typed characters go straight to the PTY (the field keeps a sentinel space so
+backspace is detectable). Closing kills the shell's whole session.
 
 Install = one `KoboRoot.tgz`: the `.so` plus `/mnt/onboard/.adds/nm/koboterminal`
 (NickelMenu reads every file in `.adds/nm/`). Uninstall = delete that menu
@@ -41,7 +41,8 @@ file and reboot (`uninstall_xflag`), or create `/mnt/onboard/koboterminal_uninst
 
 1. Plugin loads; menu entry shows a Nickel OK dialog with custom text.
 2. Terminal dialog: keyboard field runs commands in persistent `sh`, output shown.
-3. UI: monospace, sizing, scrollback limits, e-ink-friendly look.
+3. UI: monospace, sizing, e-ink-friendly look.
+4. Real PTY + libtsm terminal emulation (vi/top/less, ^C, job control).
 
 ## Verify on device
 
