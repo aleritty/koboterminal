@@ -288,7 +288,7 @@ void KtTerm::release(QPoint pos) {
     QPoint d = pos - pressPos;
     if (d.manhattanLength() < 2 * ch) {
         if (tapTarget)
-            QMetaObject::invokeMethod(tapTarget, "tapped");
+            QMetaObject::invokeMethod(tapTarget, tapMethod);
         return;
     }
     int dy = d.y();

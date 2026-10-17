@@ -33,7 +33,8 @@ public:
     QPointer<QObject> exitTarget;              // gets reject() when the shell exits
     int cellHeight() const { return ch; }
     QSize sizeHint() const override { return hint; }
-    QPointer<QObject> tapTarget;               // gets tapped() on a tap (opens Nickel's keyboard)
+    QPointer<QObject> tapTarget;               // tapMethod is invoked on it on a tap (opens a keyboard)
+    const char *tapMethod = "show";
 
 protected:
     void paintEvent(QPaintEvent *) override;

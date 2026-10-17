@@ -41,6 +41,9 @@ transparent window; the visible box is QFrame 'frame', centred above the
 KeyboardFrame 'keyboardFrame'; our widgets live in 'contentContainer'. We make
 'frame' screen-wide with thin margins; KtFit grows the terminal until the
 frame's height equals the keyboard's top (screen height when it's hidden).
+Nickel's stylesheet pads 'frame' (~58 px sides, ~82 px top): overridden with
+`#frame { padding: 0 }`. Touch arrives as QTouchEvent (TouchBegin 194, Update
+195, End 196); the keyboard is shown/hidden via KeyboardFrame::show()/hide().
   PlugWorkflowManager::aboutToConnect (USB storage) -> dialog reject() -> session killed
 ```
 

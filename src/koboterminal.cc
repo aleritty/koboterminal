@@ -159,7 +159,7 @@ protected:
 
 // The keys Nickel's keyboard lacks. No arrow keys: Nickel's keyboard ← → are
 // forwarded (see the text field below), swiping scrolls; ⌨ shows/hides it.
-static KtMods kt_keys(QWidget *box, KtTerm *term, QFont const& font, int keyHeight, QWidget *dialog, QObject *field) {
+static KtMods kt_keys(QWidget *box, KtTerm *term, int keyHeight, QWidget *dialog, QObject *field) {
     enum Kind { Text, Key, Ctrl, Alt, Kbd };
     static const struct { const char *label, *text; uint32_t keysym; Kind kind; } keys[2][5] = {
         {{"Esc", "\x1b", 0, Text}, {"/", "/", 0, Text}, {"-", "-", 0, Text}, {"~", "~", 0, Text}, {"⌨", 0, 0, Kbd}},
@@ -167,10 +167,11 @@ static KtMods kt_keys(QWidget *box, KtTerm *term, QFont const& font, int keyHeig
     };
     QGridLayout *grid = new QGridLayout(box);
     grid->setContentsMargins(0, 0, 0, 0);
-    grid->setSpacing(4);
+    grid->setSpacing(2);
     // Nickel's button style has wide padding and minimum widths; override it.
     box->setStyleSheet(QStringLiteral("QPushButton { padding: 0px; margin: 0px; min-width: 0px; }"));
-    int h = qMax(QFontMetrics(font).height() * 2, keyHeight); // a real touch target
+    int h = keyHeight;
+    QFont font = kt_font(h * 9 / 20); // labels fill the key, the key itself stays the same size
     KtMods mods = {nullptr, nullptr};
     KtKey *b[2][5];
     for (int r = 0; r < 2; r++)
@@ -197,11 +198,11 @@ static KtMods kt_keys(QWidget *box, KtTerm *term, QFont const& font, int keyHeig
                 break;
             case Kbd:
                 QObject::connect(b[r][c], &QPushButton::clicked, [dialog, field]() {
-                    QWidget *kb = kt_find_keyboard(dialog);
-                    if (kb && kb->isVisible())
-                        kb->hide(); // the way NickelDBus documents hiding it
+                    // Toggle Nickel's KeyboardFrame directly (what NickelDBus documents).
+                    if (QWidget *kb = kt_find_keyboard(dialog))
+                        kb->setVisible(!kb->isVisible());
                     else if (field)
-                        QMetaObject::invokeMethod(field, "tapped"); // the field's own "open keyboard" signal
+                        QMetaObject::invokeMethod(field, "tapped"); // fallback: the field's own signal
                 });
                 break;
             default:
@@ -262,11 +263,6 @@ private:
     int passes = 0;
 
     void fit() {
-        static bool dumped = false;
-        if (!dumped) {
-            dumped = true;
-            kt_dump(d);
-        }
         if (!keyboard && (keyboard = kt_find_keyboard(d)))
             keyboard->installEventFilter(this);
         if (!keyboard) { // without it, growing could push the prompt under the keyboard
@@ -284,8 +280,15 @@ private:
         int top = box->mapToGlobal(QPoint(0, 0)).y(), bottom = top + box->height();
         int spare = qAbs(top - (limit - bottom)) <= 2 ? limit - box->height() : limit - bottom;
         int h = qMax(3 * term->cellHeight(), term->height() + spare);
-        if (h != term->height())
+        if (h != term->height()) {
             term->setFixedHeight(h);
+            return;
+        }
+        static bool dumped = false; // once, when the layout has settled
+        if (!dumped) {
+            dumped = true;
+            kt_dump(d);
+        }
     }
 };
 
@@ -344,7 +347,7 @@ static void kt_open() {
     KtTerm *term = new KtTerm(mono, scr.width() * 9 / 10 / fm.width(QLatin1Char('M')), scr.height() * 3 / 10 / fm.height());
     term->exitTarget = d;
     QFont small = kt_font(mono.pixelSize() * 3 / 4);
-    int headerHeight = qMax(QFontMetrics(small).height() * 2, scr.height() / 32);
+    int headerHeight = QFontMetrics(small).height() + 6;
 
     // Header: title and close, in the height Nickel's empty header margin took.
     QWidget *header = new QWidget();
@@ -356,8 +359,10 @@ static void kt_open() {
     hl->addWidget(title);
     hl->addStretch();
     KtKey *close = new KtKey(QString::fromUtf8("\u2715"), small, headerHeight);
-    close->setFixedWidth(headerHeight * 3 / 2);
-    close->setStyleSheet(QStringLiteral("QPushButton { padding: 0px; margin: 0px; min-width: 0px; border: none; }"));
+    close->setFixedWidth(headerHeight * 2); // wider than tall: easier to hit in a thin header
+    close->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    // No stylesheet min-width here: it would override the fixed width (it did: 0 px wide).
+    close->setStyleSheet(QStringLiteral("QPushButton { padding: 0px; margin: 0px; border: none; }"));
     QObject::connect(close, &QPushButton::clicked, d, &QDialog::reject); // ~KtTerm kills the shell's session
     hl->addWidget(close);
     ConfirmationDialog__addWidget(d, header);
@@ -365,7 +370,7 @@ static void kt_open() {
     QWidget *row = new QWidget();
     // The field's tapped() signal is what opens the keyboard (taps on the terminal emit it).
     bool canTap = tle->metaObject()->indexOfSignal("tapped()") >= 0;
-    KtMods mods = kt_keys(row, term, small, scr.height() / 24, d, canTap ? tle : nullptr);
+    KtMods mods = kt_keys(row, term, scr.height() / 24, d, canTap ? tle : nullptr);
     ConfirmationDialog__addWidget(d, row);
 
     // Layout by the names Nickel's ConfirmationDialog uses (see the layout dump
@@ -376,10 +381,12 @@ static void kt_open() {
     QWidget *content = d->findChild<QWidget*>(QStringLiteral("contentContainer"));
     if (frame && frame->layout() && content && content->layout()) {
         frame->setFixedWidth(scr.width());
-        frame->layout()->setContentsMargins(8, 4, 8, 8);
+        frame->layout()->setContentsMargins(4, 0, 4, 2);
         frame->layout()->setSpacing(0);
+        // Nickel's stylesheet pads the box too; ours only overrides padding.
+        frame->setStyleSheet(frame->styleSheet() + QStringLiteral(" #frame { padding: 0px; }"));
         content->layout()->setContentsMargins(0, 0, 0, 0);
-        content->layout()->setSpacing(4);
+        content->layout()->setSpacing(2);
         new KtFit(d, term, frame, scr.height());
     } else {
         nh_log("dialog layout not recognised; keeping Nickel's sizes");
@@ -390,7 +397,15 @@ static void kt_open() {
     // terminal open the keyboard instead, and put our widgets above it.
     if (canTap) {
         tef->setFixedHeight(0);
-        term->tapTarget = tle;
+        // A tap on the terminal shows the keyboard: KeyboardFrame::show() when the
+        // frame exists (the field's tapped() signal alone doesn't open it).
+        if (QWidget *kb = kt_find_keyboard(d)) {
+            term->tapTarget = kb;
+            term->tapMethod = "show";
+        } else {
+            term->tapTarget = tle;
+            term->tapMethod = "tapped";
+        }
         if (QBoxLayout *l = qobject_cast<QBoxLayout*>(tef->parentWidget() ? tef->parentWidget()->layout() : nullptr)) {
             int i = l->indexOf(tef);
             if (i >= 0 && l->indexOf(header) >= 0 && l->indexOf(term) >= 0 && l->indexOf(row) >= 0) {
