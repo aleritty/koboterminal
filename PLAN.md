@@ -37,6 +37,11 @@ The text field is collapsed to zero height when its `tapped()` signal exists
 (taps on the terminal emit it), and the terminal is moved above it so Nickel
 keeps it above the keyboard. The shell starts in `/mnt/onboard`.
 
+Process tree: forkpty child = session leader, a watcher that ignores ^C/HUP,
+forks the shell, waits for it and exits. Its exit closes a pipe whose read
+end Nickel watches, so `exit` is detected with no polling or timers at all.
+Then the whole session is killed (`setsid` escapes) and the watcher reaped.
+
 Typed characters go straight to the PTY (the field keeps a sentinel space so
 backspace is detectable). Closing kills the shell's whole session.
 

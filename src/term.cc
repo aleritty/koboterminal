@@ -91,9 +91,12 @@ KtTerm::~KtTerm() {
         kt_kill_session(child);
         kt_reap(child);
     }
-    delete notifier; // unregister before the fd is closed
+    delete notifier; // unregister before the fds are closed
+    delete exitNotifier;
     if (master >= 0)
         ::close(master);
+    if (exitPipe >= 0)
+        ::close(exitPipe);
     if (vte)
         tsm_vte_unref(vte);
     if (screen)
@@ -126,52 +129,74 @@ bool KtTerm::start() {
     if (maxfd < 0 || maxfd > 65536)
         maxfd = 65536;
 
+    // Detecting `exit` without polling: a background job may keep the PTY
+    // open after the shell exits, so PTY EOF isn't enough. Instead the forkpty
+    // child (the session leader) only waits for the shell and exits, closing
+    // the write end of this pipe; Nickel's event loop sees EOF on the read end.
+    int pfd[2];
+    if (pipe2(pfd, O_CLOEXEC)) {
+        nh_log("pipe2: %m");
+        return false;
+    }
     pid_t pid = forkpty(&master, nullptr, nullptr, &ws);
     if (pid < 0) {
         nh_log("forkpty: %m");
         master = -1;
+        ::close(pfd[0]);
+        ::close(pfd[1]);
         return false;
     }
     if (pid == 0) {
-        // Nickel may block or ignore signals; exec keeps ignored ones, which
-        // would break ^C. Also don't leak Nickel's fds (e.g. on /mnt/onboard).
-        sigset_t none;
-        sigemptyset(&none);
-        sigprocmask(SIG_SETMASK, &none, nullptr);
-        for (int s = 1; s < NSIG; s++)
-            signal(s, SIG_DFL);
+        // Don't leak Nickel's fds (e.g. on /mnt/onboard) into the session.
         for (int fd = 3; fd < maxfd; fd++)
-            ::close(fd);
-        if (chdir("/mnt/onboard") && chdir("/")) {} // user storage; the braces silence warn_unused_result
-        execve(sh, argv, envp.data());
-        _exit(127);
+            if (fd != pfd[1])
+                ::close(fd);
+        // The watcher ignores terminal signals, so ^C can never end the session.
+        signal(SIGINT, SIG_IGN);
+        signal(SIGQUIT, SIG_IGN);
+        signal(SIGTSTP, SIG_IGN);
+        signal(SIGHUP, SIG_IGN);
+        signal(SIGCHLD, SIG_DFL); // Nickel may ignore it, which would break waitpid
+        pid_t shell = fork();
+        if (shell == 0) {
+            // Nickel may block or ignore signals; exec keeps ignored ones, which
+            // would break ^C. pfd[1] is O_CLOEXEC, so the shell doesn't hold it.
+            sigset_t none;
+            sigemptyset(&none);
+            sigprocmask(SIG_SETMASK, &none, nullptr);
+            for (int s = 1; s < NSIG; s++)
+                signal(s, SIG_DFL);
+            if (chdir("/mnt/onboard") && chdir("/")) {} // user storage; the braces silence warn_unused_result
+            execve(sh, argv, envp.data());
+            _exit(127);
+        }
+        while (shell > 0 && waitpid(shell, nullptr, 0) < 0 && errno == EINTR) {}
+        _exit(0);
     }
+    ::close(pfd[1]);
     child = pid;
+    exitPipe = pfd[0];
     fcntl(master, F_SETFL, fcntl(master, F_GETFL) | O_NONBLOCK);
     fcntl(master, F_SETFD, FD_CLOEXEC);
     notifier = new QSocketNotifier(master, QSocketNotifier::Read, this);
     connect(notifier, &QSocketNotifier::activated, this, &KtTerm::readPty);
-    // A background job keeps the PTY open after the shell exits, so EOF alone
-    // can't detect `exit`. Poll the shell's status while the terminal is open.
-    // ECHILD covers Nickel ignoring SIGCHLD (children are auto-reaped then).
-    connect(&reaper, &QTimer::timeout, this, [this]() {
-        pid_t r = waitpid(child, nullptr, WNOHANG);
-        if (r == child || (r < 0 && errno == ECHILD)) {
-            // Reaped: its pid may be reused from now on, so kill the leftover
-            // jobs (they still pin the session id) now and forget the pid.
-            kt_kill_session(child);
-            child = 0;
-            shellExited();
-        }
-    });
-    reaper.start(1000);
+    exitNotifier = new QSocketNotifier(exitPipe, QSocketNotifier::Read, this);
+    connect(exitNotifier, &QSocketNotifier::activated, this, &KtTerm::shellExited);
     return true;
 }
 
+// The shell is gone. Kill its leftover jobs now, while the watcher's pid (the
+// session id) is still pinned (it's unreaped), then reap and forget it.
 void KtTerm::shellExited() {
-    reaper.stop();
+    if (exitNotifier)
+        exitNotifier->setEnabled(false);
     if (notifier)
         notifier->setEnabled(false);
+    if (child > 0) {
+        kt_kill_session(child);
+        kt_reap(child);
+        child = 0;
+    }
     if (exitTarget)
         QMetaObject::invokeMethod(exitTarget, "reject", Qt::QueuedConnection);
     exitTarget = nullptr; // once
