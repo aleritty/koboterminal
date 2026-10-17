@@ -76,7 +76,7 @@ Open NickelMenu and tap **Terminal**. The shell starts in `/mnt/onboard` (the `K
   in the shell's line editor and in programs like `vi` or `less`.
 - Type `exit` (or Ctrl, then d) to close the terminal. That kills every process started from it;
   to keep something running afterwards, start it in its own session: `setsid telnetd -l /bin/sh &`.
-  The ✕ in the header does the same.
+  There is no close button or title, to leave the whole screen to the terminal.
 - Connecting USB in storage mode closes the terminal first, so the drive can be shared.
 
 ## Uninstall

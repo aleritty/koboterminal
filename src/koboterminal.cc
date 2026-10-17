@@ -14,7 +14,6 @@
 #include <QBoxLayout>
 #include <QGridLayout>
 #include <QHBoxLayout>
-#include <QLabel>
 #include <QLineEdit>
 #include <QPointer>
 #include <QMouseEvent>
@@ -216,8 +215,10 @@ static KtMods kt_keys(QWidget *box, KtTerm *term, int keyHeight, QWidget *dialog
 // Logs the dialog's widget tree once, to tune the layout from real devices.
 static void kt_dump(QWidget *w, int depth = 0) {
     QRect g = w->geometry();
-    nh_log("layout: %*s%s '%s' %dx%d+%d+%d%s", depth * 2, "", w->metaObject()->className(), qPrintable(w->objectName()),
-           g.width(), g.height(), g.x(), g.y(), w->isVisible() ? "" : " hidden");
+    QMargins m = w->contentsMargins(), lm = w->layout() ? w->layout()->contentsMargins() : QMargins();
+    nh_log("layout: %*s%s '%s' %dx%d+%d+%d%s margins %d,%d,%d,%d layout %d,%d,%d,%d", depth * 2, "",
+           w->metaObject()->className(), qPrintable(w->objectName()), g.width(), g.height(), g.x(), g.y(),
+           w->isVisible() ? "" : " hidden", m.left(), m.top(), m.right(), m.bottom(), lm.left(), lm.top(), lm.right(), lm.bottom());
     for (QObject *o : w->children())
         if (o->isWidgetType())
             kt_dump(static_cast<QWidget*>(o), depth + 1);
@@ -272,6 +273,7 @@ private:
         }
         if (passes++ >= 4)
             return;
+        box->setContentsMargins(0, 0, 0, 0); // again: a style re-polish may restore Nickel's inset
         // Every spare pixel goes to the terminal (rows = height / cell height;
         // the remainder is blank). Nickel centres the box above the keyboard, so
         // filling the space means box height == the keyboard's top; a box that
@@ -319,7 +321,7 @@ static void kt_open() {
     if (QObject *wd = WirelessWatchdog__sharedInstance ? WirelessWatchdog__sharedInstance() : nullptr)
         new KtWifiKeepAlive(wd, d);
     ConfirmationDialog__setRejectOnOutsideTap(d, false);
-    ConfirmationDialog__showCloseButton(d, false); // ours is in the header row (Nickel's floats over the box)
+    ConfirmationDialog__showCloseButton(d, false); // no X, no title: `exit` (or Ctrl+d, or USB) closes
 
     // Nickel's field brings up its on-screen keyboard. The real object size is
     // unknown, so over-allocate like NickelDBus does; it is parented to the dialog.
@@ -346,26 +348,6 @@ static void kt_open() {
     QFontMetrics fm(mono);
     KtTerm *term = new KtTerm(mono, scr.width() * 9 / 10 / fm.width(QLatin1Char('M')), scr.height() * 3 / 10 / fm.height());
     term->exitTarget = d;
-    QFont small = kt_font(mono.pixelSize() * 3 / 4);
-    int headerHeight = QFontMetrics(small).height() + 6;
-
-    // Header: title and close, in the height Nickel's empty header margin took.
-    QWidget *header = new QWidget();
-    header->setFixedHeight(headerHeight);
-    QHBoxLayout *hl = new QHBoxLayout(header);
-    hl->setContentsMargins(0, 0, 0, 0);
-    QLabel *title = new QLabel(QStringLiteral("KoboTerminal"));
-    title->setFont(small);
-    hl->addWidget(title);
-    hl->addStretch();
-    KtKey *close = new KtKey(QString::fromUtf8("\u2715"), small, headerHeight);
-    close->setFixedWidth(headerHeight * 2); // wider than tall: easier to hit in a thin header
-    close->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    // No stylesheet min-width here: it would override the fixed width (it did: 0 px wide).
-    close->setStyleSheet(QStringLiteral("QPushButton { padding: 0px; margin: 0px; border: none; }"));
-    QObject::connect(close, &QPushButton::clicked, d, &QDialog::reject); // ~KtTerm kills the shell's session
-    hl->addWidget(close);
-    ConfirmationDialog__addWidget(d, header);
     ConfirmationDialog__addWidget(d, term);
     QWidget *row = new QWidget();
     // The field's tapped() signal is what opens the keyboard (taps on the terminal emit it).
@@ -385,6 +367,8 @@ static void kt_open() {
         frame->layout()->setSpacing(0);
         // Nickel's stylesheet pads the box too; ours only overrides padding.
         frame->setStyleSheet(frame->styleSheet() + QStringLiteral(" #frame { padding: 0px; }"));
+        frame->setContentsMargins(0, 0, 0, 0); // Nickel's ~58/82 px inset (not from the layout)
+        content->setContentsMargins(0, 0, 0, 0);
         content->layout()->setContentsMargins(0, 0, 0, 0);
         content->layout()->setSpacing(2);
         new KtFit(d, term, frame, scr.height());
@@ -408,8 +392,8 @@ static void kt_open() {
         }
         if (QBoxLayout *l = qobject_cast<QBoxLayout*>(tef->parentWidget() ? tef->parentWidget()->layout() : nullptr)) {
             int i = l->indexOf(tef);
-            if (i >= 0 && l->indexOf(header) >= 0 && l->indexOf(term) >= 0 && l->indexOf(row) >= 0) {
-                QWidget *ours[] = {row, term, header}; // inserted in reverse at i
+            if (i >= 0 && l->indexOf(term) >= 0 && l->indexOf(row) >= 0) {
+                QWidget *ours[] = {row, term}; // inserted in reverse at i
                 for (QWidget *w : ours) {
                     l->removeWidget(w);
                     l->insertWidget(i, w);
