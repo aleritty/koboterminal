@@ -17,7 +17,9 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPointer>
+#include <QMouseEvent>
 #include <QPushButton>
+#include <QTouchEvent>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QScreen>
@@ -109,58 +111,102 @@ static QWidget *kt_find_keyboard(QWidget *dialog) {
     return nullptr;
 }
 
-// The keys Nickel's keyboard lacks, in Termux's default extra-keys layout,
-// plus a tall key on the right that shows/hides Nickel's keyboard.
+// A key that reacts to the touchscreen: Kobo's Qt sends touch events, and
+// QPushButton only clicks on a left mouse button. Press/release work for
+// touch and for mouse with any button; release inside the key = click().
+class KtKey : public QPushButton {
+public:
+    KtKey(QString const& label, QFont const& font, int height) : QPushButton(label) {
+        setFont(font);
+        setFocusPolicy(Qt::NoFocus); // keep the keyboard attached to the field
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        setFixedHeight(height);
+        setAttribute(Qt::WA_AcceptTouchEvents);
+    }
+
+protected:
+    bool event(QEvent *e) override {
+        static int logged = 0;
+        switch (e->type()) {
+        case QEvent::TouchBegin:
+        case QEvent::MouseButtonPress:
+            if (logged++ < 4)
+                nh_log("key input event %d", e->type());
+            setDown(true);
+            e->accept();
+            return true;
+        case QEvent::TouchEnd:
+        case QEvent::MouseButtonRelease: {
+            QPoint pos = e->type() == QEvent::TouchEnd && !static_cast<QTouchEvent*>(e)->touchPoints().isEmpty()
+                ? static_cast<QTouchEvent*>(e)->touchPoints().first().pos().toPoint()
+                : e->type() == QEvent::MouseButtonRelease ? static_cast<QMouseEvent*>(e)->pos() : QPoint(-1, -1);
+            setDown(false);
+            if (rect().contains(pos))
+                click(); // toggles Ctrl/Alt, emits clicked()
+            e->accept();
+            return true;
+        }
+        case QEvent::TouchUpdate:
+        case QEvent::TouchCancel:
+        case QEvent::MouseMove:
+            e->accept();
+            return true;
+        default:
+            return QPushButton::event(e);
+        }
+    }
+};
+
+// The keys Nickel's keyboard lacks. No arrow keys: Nickel's keyboard ← → are
+// forwarded (see the text field below), swiping scrolls; ⌨ shows/hides it.
 static KtMods kt_keys(QWidget *box, KtTerm *term, QFont const& font, int keyHeight, QWidget *dialog, QObject *field) {
-    static const struct { const char *label, *text; uint32_t keysym; } keys[2][7] = {
-        {{"Esc", "\x1b", 0}, {"/", "/", 0}, {"-", "-", 0}, {"Home", 0, XKB_KEY_Home},
-         {"\u2191", 0, XKB_KEY_Up}, {"End", 0, XKB_KEY_End}, {"PgUp", 0, XKB_KEY_Page_Up}},
-        {{"Tab", "\t", 0}, {"Ctrl", 0, 0}, {"Alt", 0, 0}, {"\u2190", 0, XKB_KEY_Left},
-         {"\u2193", 0, XKB_KEY_Down}, {"\u2192", 0, XKB_KEY_Right}, {"PgDn", 0, XKB_KEY_Page_Down}},
+    enum Kind { Text, Key, Ctrl, Alt, Kbd };
+    static const struct { const char *label, *text; uint32_t keysym; Kind kind; } keys[2][5] = {
+        {{"Esc", "\x1b", 0, Text}, {"/", "/", 0, Text}, {"-", "-", 0, Text}, {"~", "~", 0, Text}, {"⌨", 0, 0, Kbd}},
+        {{"Tab", "\t", 0, Text}, {"Ctrl", 0, 0, Ctrl}, {"Alt", 0, 0, Alt}, {"Home", 0, XKB_KEY_Home, Key}, {"End", 0, XKB_KEY_End, Key}},
     };
     QGridLayout *grid = new QGridLayout(box);
     grid->setContentsMargins(0, 0, 0, 0);
     grid->setSpacing(4);
-    // Nickel's button style has wide padding and minimum widths; override it so
-    // all 7 columns fit the terminal's width.
+    // Nickel's button style has wide padding and minimum widths; override it.
     box->setStyleSheet(QStringLiteral("QPushButton { padding: 0px; margin: 0px; min-width: 0px; }"));
     int h = qMax(QFontMetrics(font).height() * 2, keyHeight); // a real touch target
     KtMods mods = {nullptr, nullptr};
-    QPushButton *b[2][7];
-    for (int r = 0; r < 2; r++) {
-        for (int c = 0; c < 7; c++) {
-            b[r][c] = new QPushButton(QString::fromUtf8(keys[r][c].label));
-            b[r][c]->setFont(font); // Nickel's UI fonts may lack the arrows
-            b[r][c]->setFocusPolicy(Qt::NoFocus); // keep the keyboard attached to the field
-            b[r][c]->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-            b[r][c]->setFixedHeight(h);
-            grid->addWidget(b[r][c], r, c);
-        }
-    }
-    QPushButton *kbd = new QPushButton(QString::fromUtf8("\u2328"));
-    kbd->setFont(font);
-    kbd->setFocusPolicy(Qt::NoFocus);
-    kbd->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
-    grid->addWidget(kbd, 0, 7, 2, 1);
-    QObject::connect(kbd, &QPushButton::clicked, [dialog, field]() {
-        QWidget *kb = kt_find_keyboard(dialog);
-        if (kb && kb->isVisible())
-            kb->hide(); // the way NickelDBus documents hiding it
-        else if (field)
-            QMetaObject::invokeMethod(field, "tapped"); // the field's own "open keyboard" signal
-    });
-    mods.ctrl = b[1][1];
-    mods.alt = b[1][2];
+    KtKey *b[2][5];
+    for (int r = 0; r < 2; r++)
+        for (int c = 0; c < 5; c++)
+            grid->addWidget(b[r][c] = new KtKey(QString::fromUtf8(keys[r][c].label), font, h), r, c);
+    for (int r = 0; r < 2; r++)
+        for (int c = 0; c < 5; c++)
+            if (keys[r][c].kind == Ctrl)
+                mods.ctrl = b[r][c];
+            else if (keys[r][c].kind == Alt)
+                mods.alt = b[r][c];
     mods.ctrl->setCheckable(true);
     mods.alt->setCheckable(true);
     for (int r = 0; r < 2; r++) {
-        for (int c = 0; c < 7; c++) {
+        for (int c = 0; c < 5; c++) {
             const char *text = keys[r][c].text;
             uint32_t keysym = keys[r][c].keysym;
-            if (text)
+            switch (keys[r][c].kind) {
+            case Text:
                 QObject::connect(b[r][c], &QPushButton::clicked, [term, mods, text]() { kt_type(term, mods, QString::fromUtf8(text)); });
-            else if (keysym)
+                break;
+            case Key:
                 QObject::connect(b[r][c], &QPushButton::clicked, [term, mods, keysym]() { term->sendKey(keysym, mods.take()); });
+                break;
+            case Kbd:
+                QObject::connect(b[r][c], &QPushButton::clicked, [dialog, field]() {
+                    QWidget *kb = kt_find_keyboard(dialog);
+                    if (kb && kb->isVisible())
+                        kb->hide(); // the way NickelDBus documents hiding it
+                    else if (field)
+                        QMetaObject::invokeMethod(field, "tapped"); // the field's own "open keyboard" signal
+                });
+                break;
+            default:
+                break; // Ctrl/Alt just toggle; KtMods::take() reads them
+            }
         }
     }
     return mods;
@@ -309,10 +355,8 @@ static void kt_open() {
     title->setFont(small);
     hl->addWidget(title);
     hl->addStretch();
-    QPushButton *close = new QPushButton(QString::fromUtf8("\u2715"));
-    close->setFont(small);
-    close->setFocusPolicy(Qt::NoFocus);
-    close->setFixedSize(headerHeight * 3 / 2, headerHeight);
+    KtKey *close = new KtKey(QString::fromUtf8("\u2715"), small, headerHeight);
+    close->setFixedWidth(headerHeight * 3 / 2);
     close->setStyleSheet(QStringLiteral("QPushButton { padding: 0px; margin: 0px; min-width: 0px; border: none; }"));
     QObject::connect(close, &QPushButton::clicked, d, &QDialog::reject); // ~KtTerm kills the shell's session
     hl->addWidget(close);
@@ -361,23 +405,36 @@ static void kt_open() {
         nh_log("TouchLineEdit has no tapped() signal; keeping the text field visible");
     }
 
-    // Keys go to the shell as they are typed. The field always holds one
-    // sentinel space, so backspace on an "empty" line still changes the text.
+    // Keys go to the shell as they are typed. The field always holds two
+    // sentinel spaces with the cursor between them, so backspace still changes
+    // the text and Nickel's ← → keys move the cursor (sent on as arrow keys).
     // A reentrancy guard (not blockSignals) lets Nickel's own listeners on the
     // field still see the reset.
-    static const QString S = QStringLiteral(" ");
+    static const QString S = QStringLiteral("  ");
     static bool resetting = false;
-    tle->setText(S);
-    QObject::connect(tle, &QLineEdit::textChanged, term, [tle, term, mods](QString const& t) {
-        if (resetting || t == S)
-            return;
-        if (t.isEmpty())
-            term->send("\x7f");
-        else
-            kt_type(term, mods, t.endsWith(S) ? t.left(t.size() - 1) : t.startsWith(S) ? t.mid(1) : t);
+    auto reset = [tle]() {
         resetting = true;
         tle->setText(S);
+        tle->setCursorPosition(1);
         resetting = false;
+    };
+    reset();
+    QObject::connect(tle, &QLineEdit::textChanged, term, [term, mods, reset](QString const& t) {
+        if (resetting || t == S)
+            return;
+        if (t.size() < S.size())
+            term->send("\x7f"); // backspace ate a sentinel
+        else if (t.startsWith(QLatin1Char(' ')) && t.endsWith(QLatin1Char(' ')))
+            kt_type(term, mods, t.mid(1, t.size() - 2));
+        else
+            kt_type(term, mods, t.trimmed()); // Nickel replaced the text: send what's new
+        reset();
+    });
+    QObject::connect(tle, &QLineEdit::cursorPositionChanged, term, [tle, term, mods, reset](int from, int to) {
+        if (resetting || tle->text() != S || from == to)
+            return;
+        term->sendKey(to < from ? XKB_KEY_Left : XKB_KEY_Right, mods.take());
+        reset();
     });
     QObject::connect(d, &QDialog::accepted, term, [d, term]() {
         if (!d->isVisible()) // in case this firmware's Go key calls accept()

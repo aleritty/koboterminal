@@ -30,10 +30,9 @@
   and on-screen keyboard. Nothing to launch, and Nickel keeps running.
 - **Real PTY.** `/bin/sh` runs on a pseudo-terminal and output is parsed by
   [libtsm](https://github.com/kmscon/libtsm), so `vi`, `top`, `less`, job control and `^C` work.
-- **Extra keys.** Two rows of the keys Nickel's keyboard lacks, in
-  [Termux](https://wiki.termux.com/wiki/Touch_Keyboard)'s default layout: Esc, `/`, `-`, Home, ↑,
-  End, PgUp / Tab, Ctrl, Alt, ←, ↓, →, PgDn. Ctrl and Alt apply to the next key you press. A tall
-  ⌨ key on the right shows and hides Nickel's keyboard.
+- **Extra keys.** Two rows of keys Nickel's keyboard lacks: Esc, `/`, `-`, `~`, ⌨ / Tab, Ctrl, Alt,
+  Home, End. Ctrl and Alt apply to the next key you press; ⌨ shows and hides Nickel's keyboard.
+  Nickel's own ← → keys are passed to the shell as arrow keys.
 - **Scrollback.** About 1000 lines; swipe down on the terminal for older output, up for newer.
 - **E-ink friendly.** Only changed cells are redrawn, at most every 150 ms. Colours are ignored;
   inverse video (cursor, status bars) is kept. Bundled monospace font (JetBrains Mono), since Kobo
@@ -73,8 +72,8 @@ Open NickelMenu and tap **Terminal**. The shell starts in `/mnt/onboard` (the `K
   uses the whole screen). Keys go to the shell as you type; the keyboard's Go key is Enter.
 - Swipe down on the terminal to page back through older output, up for newer; swiping doesn't open
   the keyboard. Typing jumps back to the bottom.
-- `^C` (interrupt the running command) is **Ctrl** then **c**. The arrows move the cursor in the
-  shell's line editor and in programs like `vi` or `less`.
+- `^C` (interrupt the running command) is **Ctrl** then **c**. The keyboard's ← → move the cursor
+  in the shell's line editor and in programs like `vi` or `less`.
 - Type `exit` (or Ctrl, then d) to close the terminal. That kills every process started from it;
   to keep something running afterwards, start it in its own session: `setsid telnetd -l /bin/sh &`.
   The ✕ in the header does the same.

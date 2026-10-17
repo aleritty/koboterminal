@@ -13,6 +13,7 @@
 #include <QCoreApplication>
 #include <QFontMetrics>
 #include <QMouseEvent>
+#include <QTouchEvent>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QSocketNotifier>
@@ -77,6 +78,7 @@ KtTerm::KtTerm(QFont const& f, int cols, int rows, QWidget *parent) : QWidget(pa
     resize(hint); // when not in a layout
     setFocusPolicy(Qt::NoFocus);
     setAttribute(Qt::WA_OpaquePaintEvent);
+    setAttribute(Qt::WA_AcceptTouchEvents);
 
     tsm_screen_new(&screen, nullptr, nullptr);
     tsm_screen_set_max_sb(screen, 1000); // ponytail: ~1000 lines of history; swipe to page through
@@ -236,15 +238,54 @@ void KtTerm::sendKey(uint32_t keysym, unsigned mods, uint32_t unicode) {
     tsm_vte_handle_keyboard(vte, keysym, keysym < 0x80 ? keysym : 0, mods, unicode);
 }
 
+// Kobo's Qt delivers the touchscreen as touch events, not mouse clicks; take
+// both. The first few input events are logged to see what a device sends.
+bool KtTerm::event(QEvent *e) {
+    static int logged = 0;
+    switch (e->type()) {
+    case QEvent::TouchBegin:
+    case QEvent::TouchUpdate:
+    case QEvent::TouchEnd:
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonRelease:
+    case QEvent::Gesture:
+        if (logged++ < 6)
+            nh_log("terminal input event %d", e->type());
+    default:
+        break;
+    }
+    if (e->type() == QEvent::TouchBegin || e->type() == QEvent::TouchEnd) {
+        QList<QTouchEvent::TouchPoint> const& pts = static_cast<QTouchEvent*>(e)->touchPoints();
+        if (!pts.isEmpty()) {
+            QPoint pos = pts.first().pos().toPoint();
+            if (e->type() == QEvent::TouchBegin)
+                pressPos = pos;
+            else
+                release(pos);
+        }
+        e->accept(); // accepting TouchBegin is what makes Qt send the rest
+        return true;
+    }
+    if (e->type() == QEvent::TouchUpdate || e->type() == QEvent::TouchCancel) {
+        e->accept();
+        return true;
+    }
+    return QWidget::event(e);
+}
+
 void KtTerm::mousePressEvent(QMouseEvent *e) {
     pressPos = e->pos();
+}
+
+void KtTerm::mouseReleaseEvent(QMouseEvent *e) {
+    release(e->pos());
 }
 
 // A tap (little movement in any direction) opens the keyboard. A vertical
 // swipe pages through scrollback: down for older output, up for newer, one
 // e-ink refresh per page. Other swipes do nothing.
-void KtTerm::mouseReleaseEvent(QMouseEvent *e) {
-    QPoint d = e->pos() - pressPos;
+void KtTerm::release(QPoint pos) {
+    QPoint d = pos - pressPos;
     if (d.manhattanLength() < 2 * ch) {
         if (tapTarget)
             QMetaObject::invokeMethod(tapTarget, "tapped");

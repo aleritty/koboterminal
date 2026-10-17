@@ -28,8 +28,8 @@ ConfirmationDialog (Nickel's own, via dlsym — symbols copied from NickelDBus)
   + N3ConfirmationTextEditField  -> Nickel on-screen keyboard
   + KtTerm (addWidget)           -> forkpty("/bin/sh") + libtsm, grid repainted per dirty cell,
                                     1000-line scrollback (swipe), tap opens the keyboard
-  + key rows (addWidget)         -> Termux layout: Esc / - Home ↑ End PgUp | Tab Ctrl Alt ← ↓ → PgDn,
-                                    plus a tall ⌨ key that shows/hides Nickel's keyboard
+  + key rows (addWidget)         -> Esc / - ~ ⌨ | Tab Ctrl Alt Home End (KtKey: touch-aware,
+                                    Kobo's Qt sends QTouchEvents, QPushButton needs a left click)
   + KtWifiKeepAlive              -> vetoes WirelessWatchdog::aboutToKillWifi while open
   + KtFit                        -> terminal height (pixel-exact) so the dialog ends at the
                                     keyboard's top edge (screen bottom when it's hidden);
@@ -53,8 +53,9 @@ forks the shell, waits for it and exits. Its exit closes a pipe whose read
 end Nickel watches, so `exit` is detected with no polling or timers at all.
 Then the whole session is killed (`setsid` escapes) and the watcher reaped.
 
-Typed characters go straight to the PTY (the field keeps a sentinel space so
-backspace is detectable). Closing kills the shell's whole session.
+Typed characters go straight to the PTY (the field keeps two sentinel spaces
+with the cursor between them: backspace is detectable, and cursor moves from
+Nickel's ← → keys are forwarded as arrow keys). Closing kills the shell's whole session.
 
 Install = one `KoboRoot.tgz`: the `.so` plus `/mnt/onboard/.adds/nm/zz-koboterminal`
 (NickelMenu reads every file in `.adds/nm/`, alphabetically; `zz-` puts the entry last).

@@ -38,6 +38,7 @@ public:
 protected:
     void paintEvent(QPaintEvent *) override;
     void resizeEvent(QResizeEvent *) override;
+    bool event(QEvent *) override;
     void mousePressEvent(QMouseEvent *) override;
     void mouseReleaseEvent(QMouseEvent *) override;
 
@@ -58,6 +59,7 @@ private:
     bool scrolled = false;  // viewing scrollback
 
     void writePty(const char *data, size_t len);
+    void release(QPoint pos); // end of a tap or swipe
     void readPty();
     void shellExited();
     void repaintDirty();
