@@ -148,7 +148,8 @@ C/C++ compiler, `pkg-config` and the Qt 5 development headers (Debian/Ubuntu:
 **Releases.** [GitHub Actions](.github/workflows/build.yml) and [GitLab CI](.gitlab-ci.yml) test and
 build every push. Pushing a `v*` tag (`git tag v1.2.3 && git push origin v1.2.3`) publishes a release
 with both packages and the third-party notices attached; a tag with a `-`, like `v1.2.3-rc1`, is a
-prerelease on GitHub.
+prerelease on GitHub. The release text is that version's section of [CHANGELOG.md](CHANGELOG.md)
+plus install instructions (`scripts/release-notes.sh`), so add the section before tagging.
 
 **How it works.** [PLAN.md](PLAN.md) has the design notes: how the plugin hooks into NickelMenu, how
 the dialog is laid out, and why earlier approaches didn't work out.

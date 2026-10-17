@@ -53,11 +53,11 @@ release:
       artifacts: true
     - job: test
   script:
-    - echo "Releasing $CI_COMMIT_TAG (build job $BUILD_JOB_ID)"
+    - sh scripts/release-notes.sh "$CI_COMMIT_TAG" > release-notes.md # CHANGELOG.md section + how to install
   release:
     tag_name: $CI_COMMIT_TAG
     name: KoboTerminal $CI_COMMIT_TAG
-    description: Copy KoboRoot.tgz to KOBOeReader/.kobo/ and reboot.
+    description: ./release-notes.md
     assets:
       links:
         - name: KoboRoot.tgz

@@ -38,6 +38,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+      - run: scripts/release-notes.sh "${{ github.ref_name }}" > release-notes.md
       - uses: actions/download-artifact@v8
         with:
           name: koboterminal-${{ github.sha }}
@@ -48,4 +50,4 @@ jobs:
             KoboRoot-uninstall.tgz
             THIRD_PARTY_NOTICES.md
           prerelease: ${{ contains(github.ref_name, '-') }}
-          generate_release_notes: true
+          body_path: release-notes.md # CHANGELOG.md section + how to install
