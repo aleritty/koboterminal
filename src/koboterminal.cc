@@ -1,7 +1,13 @@
 #include <fcntl.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <QDialog>
+#include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QPointer>
+#include <QProcess>
 #include <QSocketNotifier>
 #include <QString>
 
@@ -9,10 +15,95 @@
 
 #define KT_FIFO "/tmp/koboterminal.fifo"
 
+// Nickel types we only use through their Qt base classes.
+typedef QDialog ConfirmationDialog;
+typedef QWidget N3ConfirmationTextEditField;
+
+// Signatures and the text-edit-field recipe come from NickelDBus (NDBCfmDlg.cc).
 static void (*ConfirmationDialogFactory_showOKDialog)(QString const& title, QString const& body);
+static ConfirmationDialog *(*ConfirmationDialogFactory_showTextEditDialog)(QString const& title);
+static void (*ConfirmationDialog__setTitle)(ConfirmationDialog *_this, QString const&);
+static void (*ConfirmationDialog__setAcceptButtonText)(ConfirmationDialog *_this, QString const&);
+static void (*ConfirmationDialog__setRejectButtonText)(ConfirmationDialog *_this, QString const&);
+static void (*ConfirmationDialog__showCloseButton)(ConfirmationDialog *_this, bool);
+static void (*ConfirmationDialog__setRejectOnOutsideTap)(ConfirmationDialog *_this, bool);
+static void (*ConfirmationDialog__addWidget)(ConfirmationDialog *_this, QWidget *);
+static N3ConfirmationTextEditField *(*N3ConfirmationTextEditField__N3ConfirmationTextEditFieldKS)(N3ConfirmationTextEditField *_this, ConfirmationDialog *, int keyboardScript);
+static N3ConfirmationTextEditField *(*N3ConfirmationTextEditField__N3ConfirmationTextEditField)(N3ConfirmationTextEditField *_this, ConfirmationDialog *); // fw 4.6
+static QLineEdit *(*N3ConfirmationTextEditField__textEdit)(N3ConfirmationTextEditField *_this);
+
+static QPointer<ConfirmationDialog> kt_dlg;
 
 static void kt_open() {
-    ConfirmationDialogFactory_showOKDialog(QStringLiteral("KoboTerminal"), QStringLiteral("Hello from KoboTerminal."));
+    if (kt_dlg)
+        return;
+    if (!ConfirmationDialogFactory_showTextEditDialog || !ConfirmationDialog__setTitle || !ConfirmationDialog__setAcceptButtonText ||
+        !ConfirmationDialog__setRejectButtonText || !ConfirmationDialog__showCloseButton || !ConfirmationDialog__setRejectOnOutsideTap ||
+        !ConfirmationDialog__addWidget || !N3ConfirmationTextEditField__textEdit ||
+        !(N3ConfirmationTextEditField__N3ConfirmationTextEditFieldKS || N3ConfirmationTextEditField__N3ConfirmationTextEditField)) {
+        ConfirmationDialogFactory_showOKDialog(QStringLiteral("KoboTerminal"), QStringLiteral("Unsupported firmware: missing Nickel symbols."));
+        return;
+    }
+
+    ConfirmationDialog *d = ConfirmationDialogFactory_showTextEditDialog(QString());
+    if (!d)
+        return;
+    d->hide();
+    kt_dlg = d;
+
+    // Nickel's field brings up its on-screen keyboard. The real object size is
+    // unknown, so over-allocate like NickelDBus does; it is parented to the dialog.
+    N3ConfirmationTextEditField *tef = reinterpret_cast<N3ConfirmationTextEditField*>(calloc(1, 256));
+    if (N3ConfirmationTextEditField__N3ConfirmationTextEditFieldKS)
+        N3ConfirmationTextEditField__N3ConfirmationTextEditFieldKS(tef, d, 1);
+    else
+        N3ConfirmationTextEditField__N3ConfirmationTextEditField(tef, d);
+    QLineEdit *tle = N3ConfirmationTextEditField__textEdit(tef);
+    // Keyboard "Go" behaves like the Run button.
+    if (!QObject::connect(tef, SIGNAL(commitRequested()), d, SIGNAL(accepted())))
+        nh_log("could not connect commitRequested");
+
+    QPlainTextEdit *out = new QPlainTextEdit();
+    out->setReadOnly(true);
+    out->setFocusPolicy(Qt::NoFocus);
+    out->setMaximumBlockCount(1000);
+    ConfirmationDialog__addWidget(d, out);
+
+    ConfirmationDialog__setTitle(d, QStringLiteral("KoboTerminal"));
+    ConfirmationDialog__setAcceptButtonText(d, QStringLiteral("Run"));
+    ConfirmationDialog__setRejectButtonText(d, QStringLiteral("Close"));
+    ConfirmationDialog__setRejectOnOutsideTap(d, false);
+    ConfirmationDialog__showCloseButton(d, true);
+
+    // One persistent shell, so cd/exports carry over between commands.
+    QProcess *sh = new QProcess(d);
+    sh->setProcessChannelMode(QProcess::MergedChannels);
+    auto append = [out](QString const& s) {
+        out->moveCursor(QTextCursor::End);
+        out->insertPlainText(s);
+        out->ensureCursorVisible();
+    };
+    QObject::connect(sh, &QProcess::readyRead, [sh, append]() {
+        append(QString::fromUtf8(sh->readAll()));
+    });
+    QObject::connect(sh, static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished), d, &QDialog::reject);
+
+    QObject::connect(d, &QDialog::accepted, [d, tle, sh, append]() {
+        if (!d->isVisible()) // in case this firmware's Run button calls accept()
+            d->open();
+        QString cmd = tle->text();
+        tle->clear();
+        append(QStringLiteral("$ ") + cmd + QStringLiteral("\n"));
+        sh->write((cmd + QStringLiteral("\n")).toUtf8());
+    });
+    QObject::connect(d, &QDialog::rejected, [d, sh]() {
+        sh->disconnect(); // ~QProcess kills sh; don't let finished() re-enter the dying dialog
+        d->deleteLater();
+    });
+
+    sh->start(QStringLiteral("/bin/sh"));
+    d->setModal(true);
+    d->open();
 }
 
 // NickelMenu writes a byte to the FIFO; the notifier fires on Nickel's event
@@ -50,8 +141,19 @@ static struct nh_hook KoboTerminalHook[] = {
     {0},
 };
 
+// Only showOKDialog is required (it reports everything else missing).
 static struct nh_dlsym KoboTerminalDlsym[] = {
-    {.name = "_ZN25ConfirmationDialogFactory12showOKDialogERK7QStringS2_", .out = nh_symoutptr(ConfirmationDialogFactory_showOKDialog)},
+    {.name = "_ZN25ConfirmationDialogFactory12showOKDialogERK7QStringS2_",                .out = nh_symoutptr(ConfirmationDialogFactory_showOKDialog)},
+    {.name = "_ZN25ConfirmationDialogFactory18showTextEditDialogERK7QString",              .out = nh_symoutptr(ConfirmationDialogFactory_showTextEditDialog),                        .desc = 0, .optional = true},
+    {.name = "_ZN18ConfirmationDialog8setTitleERK7QString",                                .out = nh_symoutptr(ConfirmationDialog__setTitle),                                         .desc = 0, .optional = true},
+    {.name = "_ZN18ConfirmationDialog19setAcceptButtonTextERK7QString",                    .out = nh_symoutptr(ConfirmationDialog__setAcceptButtonText),                              .desc = 0, .optional = true},
+    {.name = "_ZN18ConfirmationDialog19setRejectButtonTextERK7QString",                    .out = nh_symoutptr(ConfirmationDialog__setRejectButtonText),                              .desc = 0, .optional = true},
+    {.name = "_ZN18ConfirmationDialog15showCloseButtonEb",                                 .out = nh_symoutptr(ConfirmationDialog__showCloseButton),                                  .desc = 0, .optional = true},
+    {.name = "_ZN18ConfirmationDialog21setRejectOnOutsideTapEb",                           .out = nh_symoutptr(ConfirmationDialog__setRejectOnOutsideTap),                            .desc = 0, .optional = true},
+    {.name = "_ZN18ConfirmationDialog9addWidgetEP7QWidget",                                .out = nh_symoutptr(ConfirmationDialog__addWidget),                                        .desc = 0, .optional = true},
+    {.name = "_ZN27N3ConfirmationTextEditFieldC1EP18ConfirmationDialog14KeyboardScript", .out = nh_symoutptr(N3ConfirmationTextEditField__N3ConfirmationTextEditFieldKS),          .desc = 0, .optional = true},
+    {.name = "_ZN27N3ConfirmationTextEditFieldC1EP18ConfirmationDialog",                  .out = nh_symoutptr(N3ConfirmationTextEditField__N3ConfirmationTextEditField),            .desc = 0, .optional = true},
+    {.name = "_ZNK27N3ConfirmationTextEditField8textEditEv",                              .out = nh_symoutptr(N3ConfirmationTextEditField__textEdit),                                .desc = 0, .optional = true},
     {0},
 };
 
