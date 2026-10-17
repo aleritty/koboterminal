@@ -25,7 +25,7 @@ test:
     - make all strip koboroot koboroot-uninstall
     - echo "BUILD_JOB_ID=$CI_JOB_ID" > build.env
   artifacts:
-    paths: [KoboRoot.tgz, KoboRoot-uninstall.tgz]
+    paths: [KoboRoot.tgz, KoboRoot-uninstall.tgz, THIRD_PARTY_NOTICES.md]
     reports:
       dotenv: build.env
 
@@ -66,3 +66,6 @@ release:
         - name: KoboRoot-uninstall.tgz
           url: $CI_PROJECT_URL/-/jobs/$BUILD_JOB_ID/artifacts/raw/KoboRoot-uninstall.tgz
           link_type: package
+        - name: THIRD_PARTY_NOTICES.md
+          url: $CI_PROJECT_URL/-/jobs/$BUILD_JOB_ID/artifacts/raw/THIRD_PARTY_NOTICES.md
+          link_type: other

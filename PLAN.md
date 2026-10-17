@@ -94,6 +94,14 @@ all three places:** `kt_uninstall()` in `src/koboterminal.cc`, the manual
 The shell itself may create files (history, user files); those belong to the
 user and are not tracked.
 
+## Licensing (keep up to date)
+
+Everything statically linked or embedded into `libkoboterminal.so` must appear
+in `THIRD_PARTY_NOTICES.md` with its full license text: NickelHook, libtsm, its
+CCAN hash table (LGPL-2.1+: allowed because the full source is public and
+relinkable), wcwidth, JetBrains Mono (OFL). **Updating or adding a vendored
+component means updating that file**; CI attaches it to every release.
+
 ## Phases
 
 1. Plugin loads; menu entry shows a Nickel OK dialog with custom text.

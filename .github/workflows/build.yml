@@ -29,6 +29,7 @@ jobs:
           path: |
             KoboRoot.tgz
             KoboRoot-uninstall.tgz
+            THIRD_PARTY_NOTICES.md
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -45,5 +46,6 @@ jobs:
           files: |
             KoboRoot.tgz
             KoboRoot-uninstall.tgz
+            THIRD_PARTY_NOTICES.md
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
