@@ -34,15 +34,19 @@ ConfirmationDialog (Nickel's own, via dlsym — symbols copied from NickelDBus)
   + KtFit                        -> terminal height (pixel-exact) so the dialog ends at the
                                     keyboard's top edge (screen bottom when it's hidden);
                                     width follows the layout, cols/rows = size / cell size
-  + kt_flatten                   -> zero layout margins up to the dialog, hide the empty
-                                    header above the terminal (only when the X is gone)
+  + header row (addWidget)       -> "KoboTerminal" + ✕ (reject); Nickel's own X stays hidden
+
+Nickel's ConfirmationDialog (fw 4.x, from the layout dump): a full-screen
+transparent window; the visible box is QFrame 'frame', centred above the
+KeyboardFrame 'keyboardFrame'; our widgets live in 'contentContainer'. We make
+'frame' screen-wide with thin margins; KtFit grows the terminal until the
+frame's height equals the keyboard's top (screen height when it's hidden).
   PlugWorkflowManager::aboutToConnect (USB storage) -> dialog reject() -> session killed
 ```
 
 The text field is collapsed to zero height when its `tapped()` signal exists
 (taps on the terminal emit it), and the terminal is moved above it so Nickel
-keeps it above the keyboard. In that case there is no X (`exit` closes); if the
-signal is missing the X and the field stay, so the modal dialog can't trap the user. The shell starts in `/mnt/onboard`.
+keeps it above the keyboard. The header's ✕ always closes, so the modal dialog can't trap the user. The shell starts in `/mnt/onboard`.
 
 Process tree: forkpty child = session leader, a watcher that ignores ^C/HUP,
 forks the shell, waits for it and exits. Its exit closes a pipe whose read

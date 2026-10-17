@@ -13,6 +13,8 @@
 #include <QGuiApplication>
 #include <QBoxLayout>
 #include <QGridLayout>
+#include <QHBoxLayout>
+#include <QLabel>
 #include <QLineEdit>
 #include <QPointer>
 #include <QPushButton>
@@ -164,28 +166,6 @@ static KtMods kt_keys(QWidget *box, KtTerm *term, QFont const& font, int keyHeig
     return mods;
 }
 
-// Gives the terminal the whole dialog: zero inner margins on every layout from
-// the terminal up to the dialog, and hide whatever sits above the terminal in
-// those layouts (the empty title/close header). Only used once the X is gone.
-static void kt_flatten(QWidget *dialog, QWidget *term, QWidget *field, QWidget *keys) {
-    QWidget *child = term;
-    for (QWidget *w = term->parentWidget(); w; w = (w == dialog) ? nullptr : w->parentWidget()) {
-        QLayout *l = w->layout();
-        if (!l) {
-            child = w;
-            continue;
-        }
-        l->setContentsMargins(0, 0, 0, 0);
-        l->setSpacing(0);
-        for (int i = 0, n = l->indexOf(child); i < n; i++) {
-            QWidget *above = l->itemAt(i)->widget();
-            if (above && above != field && above != keys && !strstr(above->metaObject()->className(), "Keyboard"))
-                above->hide();
-        }
-        child = w;
-    }
-}
-
 // Logs the dialog's widget tree once, to tune the layout from real devices.
 static void kt_dump(QWidget *w, int depth = 0) {
     QRect g = w->geometry();
@@ -196,14 +176,14 @@ static void kt_dump(QWidget *w, int depth = 0) {
             kt_dump(static_cast<QWidget*>(o), depth + 1);
 }
 
-// Sizes the terminal so the dialog reaches down to Nickel's keyboard, or to
-// the bottom of the screen while the keyboard is hidden. Refits when the
-// dialog or the keyboard changes; a few passes at most per change, so a
-// dialog that re-centres itself can't make it loop.
+// Sizes the terminal so the dialog's box fills the space above Nickel's
+// keyboard, or the whole screen while the keyboard is hidden. Refits when the
+// dialog or the keyboard changes, a few passes at most per change.
 class KtFit : public QObject {
 public:
-    KtFit(QDialog *d, KtTerm *term, QWidget *keys, int screenHeight)
-        : QObject(d), d(d), term(term), keys(keys), screenHeight(screenHeight) {
+    // box: the visible dialog box (Nickel's 'frame'), centred above the keyboard.
+    KtFit(QDialog *d, KtTerm *term, QWidget *box, int screenHeight)
+        : QObject(d), d(d), term(term), box(box), screenHeight(screenHeight) {
         timer.setSingleShot(true);
         timer.setInterval(50); // let Nickel's layouts settle first
         connect(&timer, &QTimer::timeout, this, [this]() { fit(); });
@@ -229,7 +209,7 @@ protected:
 private:
     QDialog *d;
     KtTerm *term;
-    QWidget *keys;
+    QWidget *box;
     int screenHeight;
     QTimer timer;
     QPointer<QWidget> keyboard;
@@ -251,9 +231,12 @@ private:
         if (passes++ >= 4)
             return;
         // Every spare pixel goes to the terminal (rows = height / cell height;
-        // the remainder is blank), so the dialog ends right at the keyboard.
+        // the remainder is blank). Nickel centres the box above the keyboard, so
+        // filling the space means box height == the keyboard's top; a box that
+        // isn't centred just grows down to it.
         int limit = keyboard->isVisible() ? keyboard->mapToGlobal(QPoint(0, 0)).y() : screenHeight;
-        int spare = limit - keys->mapToGlobal(QPoint(0, keys->height())).y() - 2; // 2: the dialog's border
+        int top = box->mapToGlobal(QPoint(0, 0)).y(), bottom = top + box->height();
+        int spare = qAbs(top - (limit - bottom)) <= 2 ? limit - box->height() : limit - bottom;
         int h = qMax(3 * term->cellHeight(), term->height() + spare);
         if (h != term->height())
             term->setFixedHeight(h);
@@ -287,6 +270,7 @@ static void kt_open() {
     if (QObject *wd = WirelessWatchdog__sharedInstance ? WirelessWatchdog__sharedInstance() : nullptr)
         new KtWifiKeepAlive(wd, d);
     ConfirmationDialog__setRejectOnOutsideTap(d, false);
+    ConfirmationDialog__showCloseButton(d, false); // ours is in the header row (Nickel's floats over the box)
 
     // Nickel's field brings up its on-screen keyboard. The real object size is
     // unknown, so over-allocate like NickelDBus does; it is parented to the dialog.
@@ -313,34 +297,66 @@ static void kt_open() {
     QFontMetrics fm(mono);
     KtTerm *term = new KtTerm(mono, scr.width() * 9 / 10 / fm.width(QLatin1Char('M')), scr.height() * 3 / 10 / fm.height());
     term->exitTarget = d;
+    QFont small = kt_font(mono.pixelSize() * 3 / 4);
+    int headerHeight = qMax(QFontMetrics(small).height() * 2, scr.height() / 32);
+
+    // Header: title and close, in the height Nickel's empty header margin took.
+    QWidget *header = new QWidget();
+    header->setFixedHeight(headerHeight);
+    QHBoxLayout *hl = new QHBoxLayout(header);
+    hl->setContentsMargins(0, 0, 0, 0);
+    QLabel *title = new QLabel(QStringLiteral("KoboTerminal"));
+    title->setFont(small);
+    hl->addWidget(title);
+    hl->addStretch();
+    QPushButton *close = new QPushButton(QString::fromUtf8("\u2715"));
+    close->setFont(small);
+    close->setFocusPolicy(Qt::NoFocus);
+    close->setFixedSize(headerHeight * 3 / 2, headerHeight);
+    close->setStyleSheet(QStringLiteral("QPushButton { padding: 0px; margin: 0px; min-width: 0px; border: none; }"));
+    QObject::connect(close, &QPushButton::clicked, d, &QDialog::reject); // ~KtTerm kills the shell's session
+    hl->addWidget(close);
+    ConfirmationDialog__addWidget(d, header);
     ConfirmationDialog__addWidget(d, term);
     QWidget *row = new QWidget();
-    // The field's tapped() signal is what opens the keyboard. With it, taps on the
-    // terminal open the keyboard and `exit` closes, so the X goes. Without it,
-    // keep the X and the visible field, or the modal dialog could trap the user.
+    // The field's tapped() signal is what opens the keyboard (taps on the terminal emit it).
     bool canTap = tle->metaObject()->indexOfSignal("tapped()") >= 0;
-    ConfirmationDialog__showCloseButton(d, !canTap);
-    KtMods mods = kt_keys(row, term, kt_font(mono.pixelSize() * 3 / 4), scr.height() / 24, d, canTap ? tle : nullptr);
+    KtMods mods = kt_keys(row, term, small, scr.height() / 24, d, canTap ? tle : nullptr);
     ConfirmationDialog__addWidget(d, row);
-    new KtFit(d, term, row, scr.height());
+
+    // Layout by the names Nickel's ConfirmationDialog uses (see the layout dump
+    // in the log): a full-screen transparent dialog whose visible box 'frame'
+    // is centred above the keyboard, content in 'contentContainer'. Make the box
+    // screen-wide with thin margins. If the names differ, keep Nickel's layout.
+    QWidget *frame = d->findChild<QWidget*>(QStringLiteral("frame"));
+    QWidget *content = d->findChild<QWidget*>(QStringLiteral("contentContainer"));
+    if (frame && frame->layout() && content && content->layout()) {
+        frame->setFixedWidth(scr.width());
+        frame->layout()->setContentsMargins(8, 4, 8, 8);
+        frame->layout()->setSpacing(0);
+        content->layout()->setContentsMargins(0, 0, 0, 0);
+        content->layout()->setSpacing(4);
+        new KtFit(d, term, frame, scr.height());
+    } else {
+        nh_log("dialog layout not recognised; keeping Nickel's sizes");
+    }
 
 
     // The text field is only a keyboard receiver: collapse it, let a tap on the
-    // terminal open the keyboard instead, and put the terminal above the field
-    // so Nickel keeps it above the keyboard.
+    // terminal open the keyboard instead, and put our widgets above it.
     if (canTap) {
         tef->setFixedHeight(0);
         term->tapTarget = tle;
         if (QBoxLayout *l = qobject_cast<QBoxLayout*>(tef->parentWidget() ? tef->parentWidget()->layout() : nullptr)) {
             int i = l->indexOf(tef);
-            if (i >= 0 && l->indexOf(term) >= 0 && l->indexOf(row) >= 0) {
-                l->removeWidget(term);
-                l->removeWidget(row);
-                l->insertWidget(i, row);
-                l->insertWidget(i, term);
+            if (i >= 0 && l->indexOf(header) >= 0 && l->indexOf(term) >= 0 && l->indexOf(row) >= 0) {
+                QWidget *ours[] = {row, term, header}; // inserted in reverse at i
+                for (QWidget *w : ours) {
+                    l->removeWidget(w);
+                    l->insertWidget(i, w);
+                }
             }
         }
-        kt_flatten(d, term, tef, row);
     } else {
         nh_log("TouchLineEdit has no tapped() signal; keeping the text field visible");
     }
