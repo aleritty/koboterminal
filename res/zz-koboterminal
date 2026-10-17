@@ -1,3 +1,7 @@
 # KoboTerminal. Delete this file and reboot to uninstall.
 menu_item : main : Terminal : cmd_output : 1000 : quiet : test -p /tmp/koboterminal.fifo && echo > /tmp/koboterminal.fifo
   chain_failure : dbg_toast : KoboTerminal plugin not loaded
+
+# Black and white even on a colour screen: remove the "#" from the next two lines.
+#menu_item : main : Terminal (B/W) : cmd_output : 1000 : quiet : test -p /tmp/koboterminal.fifo && echo mono > /tmp/koboterminal.fifo
+#  chain_failure : dbg_toast : KoboTerminal plugin not loaded

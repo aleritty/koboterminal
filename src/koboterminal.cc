@@ -1,3 +1,4 @@
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <string.h>
 #include <stdlib.h>
@@ -17,6 +18,7 @@
 #include <QLineEdit>
 #include <QPointer>
 #include <QMouseEvent>
+#include <QProcess>
 #include <QPushButton>
 #include <QTouchEvent>
 #include <QRegularExpression>
@@ -54,6 +56,7 @@ static QLineEdit *(*N3ConfirmationTextEditField__textEdit)(N3ConfirmationTextEdi
 // Optional: missing ones only disable the feature (Wi-Fi keepalive, close on USB).
 static QObject *(*WirelessWatchdog__sharedInstance)();
 static QObject *(*PlugWorkflowManager__sharedInstance)();
+static void *(*Device__getCurrentDevice)(); // as used by NickelMenu
 
 static QPointer<ConfirmationDialog> kt_dlg;
 
@@ -318,7 +321,43 @@ private:
     }
 };
 
-static void kt_open() {
+// Whether the screen is colour e-ink (e.g. Kobo Libra/Clara Colour). On a
+// black-and-white panel colours turn into greys that can be unreadable, so
+// anything uncertain means black and white. Decided once, then cached.
+static bool kt_colour_screen() {
+    static int cached = -1;
+    if (cached >= 0)
+        return cached;
+    cached = 0;
+    // 1. Nickel's own answer, if this firmware has such a Device method. The
+    //    names are educated guesses; the log shows which one (if any) resolved.
+    static const char *const methods[] = {
+        "_ZNK6Device14hasColorScreenEv", "_ZNK6Device15hasColourScreenEv", "_ZNK6Device15hasColorDisplayEv",
+        "_ZNK6Device13isColorDeviceEv", "_ZNK6Device13supportsColorEv", "_ZNK6Device7isColorEv",
+        "_ZNK6Device10hasKaleidoEv",
+    };
+    void *dev = Device__getCurrentDevice ? Device__getCurrentDevice() : nullptr;
+    for (const char *m : methods) {
+        if (void *fn = dev ? dlsym(RTLD_DEFAULT, m) : nullptr) {
+            cached = reinterpret_cast<bool (*)(void *)>(fn)(dev);
+            nh_log("colour: Nickel's %s says %s", m, cached ? "colour" : "black and white");
+            return cached;
+        }
+    }
+    // 2. The model's codename (what KOReader goes by): Libra Colour is
+    //    "monza", Clara Colour "spaColour"; black-and-white models never match.
+    QProcess p;
+    p.start(QStringLiteral("/bin/kobo_config.sh"));
+    QString codename = p.waitForFinished(2000) ? QString::fromLatin1(p.readAllStandardOutput()).trimmed() : QString();
+    cached = codename.contains(QLatin1String("monza"), Qt::CaseInsensitive) ||
+             codename.contains(QLatin1String("colour"), Qt::CaseInsensitive) ||
+             codename.contains(QLatin1String("color"), Qt::CaseInsensitive);
+    nh_log("colour: codename '%s' -> %s", qPrintable(codename), cached ? "colour" : "black and white");
+    return cached;
+}
+
+// forceBW: the menu entry asked for black and white even on a colour screen.
+static void kt_open(bool forceBW) {
     if (kt_dlg) { // e.g. Nickel hid it (sleep, USB): bring the same session back
         if (!kt_dlg->isVisible())
             kt_dlg->open();
@@ -372,6 +411,7 @@ static void kt_open() {
     QFontMetrics fm(mono);
     KtTerm *term = new KtTerm(mono, scr.width() * 9 / 10 / fm.width(QLatin1Char('M')), scr.height() * 3 / 10 / fm.height());
     term->exitTarget = d;
+    term->colour = !forceBW && kt_colour_screen();
     ConfirmationDialog__addWidget(d, term);
     QWidget *row = new QWidget();
     // The field's tapped() signal is what opens the keyboard (taps on the terminal emit it).
@@ -504,8 +544,11 @@ static int kt_init() {
     n->moveToThread(QCoreApplication::instance()->thread());
     QObject::connect(n, &QSocketNotifier::activated, [](int rfd) {
         char buf[64];
-        while (read(rfd, buf, sizeof(buf)) > 0); // drain; any number of taps opens one dialog
-        kt_open();
+        QByteArray msg;
+        ssize_t n;
+        while ((n = read(rfd, buf, sizeof(buf))) > 0) // drain; any number of taps opens one dialog
+            msg.append(buf, n);
+        kt_open(msg.contains("mono"));
     });
     nh_log("listening on %s", KT_FIFO);
     unlink(KT_MENU_OLD); // upgrade from the old menu file name, or the entry would show twice
@@ -571,6 +614,7 @@ static struct nh_dlsym KoboTerminalDlsym[] = {
     {.name = "_ZN27N3ConfirmationTextEditFieldC1EP18ConfirmationDialog14KeyboardScript", .out = nh_symoutptr(N3ConfirmationTextEditField__N3ConfirmationTextEditFieldKS),          .desc = 0, .optional = true},
     {.name = "_ZN27N3ConfirmationTextEditFieldC1EP18ConfirmationDialog",                  .out = nh_symoutptr(N3ConfirmationTextEditField__N3ConfirmationTextEditField),            .desc = 0, .optional = true},
     {.name = "_ZN16WirelessWatchdog14sharedInstanceEv",                                    .out = nh_symoutptr(WirelessWatchdog__sharedInstance),                                    .desc = 0, .optional = true},
+    {.name = "_ZN6Device16getCurrentDeviceEv",                                             .out = nh_symoutptr(Device__getCurrentDevice),                                            .desc = 0, .optional = true},
     {.name = "_ZN19PlugWorkflowManager14sharedInstanceEv",                                 .out = nh_symoutptr(PlugWorkflowManager__sharedInstance),                                 .desc = 0, .optional = true},
     {.name = "_ZNK27N3ConfirmationTextEditField8textEditEv",                              .out = nh_symoutptr(N3ConfirmationTextEditField__textEdit),                                .desc = 0, .optional = true},
     {0},

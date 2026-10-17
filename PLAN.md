@@ -94,6 +94,16 @@ all three places:** `kt_uninstall()` in `src/koboterminal.cc`, the manual
 The shell itself may create files (history, user files); those belong to the
 user and are not tracked.
 
+## Colour
+
+`KtTerm::cellColours` maps libtsm's colours: B/W is black on white (+ inverse);
+colour mode uses darkened ANSI text colours and light background tints, so text
+is always dark on light (asserted in tests/term_test.cc). Colour is used only
+when `kt_colour_screen()` is sure: first a Nickel `Device` colour method (names
+guessed; the log says which resolved), else the codename from
+`/bin/kobo_config.sh` (monza, spaColour, ...). Anything else: B/W. The menu can
+force B/W by writing `mono` to the FIFO (commented entry in the menu file).
+
 ## Licensing (keep up to date)
 
 Everything statically linked or embedded into `libkoboterminal.so` must appear

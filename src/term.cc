@@ -327,6 +327,50 @@ void KtTerm::readPty() {
         flush.start();
 }
 
+// The 16 ANSI colours as text colours, darkened and saturated for colour
+// e-ink. White and light grey would vanish on the white background, so they
+// become greys dark enough to read.
+static const QRgb kt_ansi[16] = {
+    0x000000, 0xb00000, 0x007000, 0x8a6200, 0x0035c8, 0x9a009a, 0x006f8a, 0x505050,
+    0x404040, 0xe00000, 0x009000, 0xa07800, 0x2050ff, 0xc000c0, 0x008fb0, 0x303030,
+};
+
+static int kt_luma(QColor c) { return (299 * c.red() + 587 * c.green() + 114 * c.blue()) / 1000; }
+
+// Darkens a colour until its luminance is at most `max` (0-255).
+static QColor kt_darken(QColor c, int max) {
+    int l = kt_luma(c);
+    return l <= max ? c : QColor(c.red() * max / l, c.green() * max / l, c.blue() * max / l);
+}
+
+// A light tint (35% colour, 65% white): backgrounds stay light, text stays readable.
+static QColor kt_tint(QColor c) {
+    return QColor(255 - (255 - c.red()) * 35 / 100, 255 - (255 - c.green()) * 35 / 100, 255 - (255 - c.blue()) * 35 / 100);
+}
+
+void KtTerm::cellColours(const tsm_screen_attr *attr, bool colour, QColor *fg, QColor *bg) {
+    if (!colour) {
+        *fg = Qt::black;
+        *bg = Qt::white;
+    } else {
+        int f = attr->fccode, b = attr->bccode;
+        if (f >= 0 && f < 16)
+            *fg = QColor(kt_ansi[f]);
+        else if (f < 0)
+            *fg = kt_darken(QColor(attr->fr, attr->fg, attr->fb), 110); // 256-colour / 24-bit
+        else
+            *fg = Qt::black; // default foreground
+        if (b >= 0 && b < 16)
+            *bg = kt_tint(QColor(kt_ansi[b]));
+        else if (b < 0)
+            *bg = kt_tint(QColor(attr->br, attr->bg, attr->bb));
+        else
+            *bg = Qt::white; // default background
+    }
+    if (attr->inverse)
+        qSwap(*fg, *bg);
+}
+
 namespace {
 struct DrawCtx {
     QPainter *p;          // paint pass, or null for the dirty-collection pass
@@ -334,6 +378,7 @@ struct DrawCtx {
     tsm_age_t since;
     int cw, ch;
     QFont const *font, *bold;
+    bool colour;
 };
 }
 
@@ -348,9 +393,9 @@ static int kt_draw_cell(struct tsm_screen *, uint64_t, const uint32_t *ch, size_
             *c->dirty |= r;
         return 0;
     }
-    // e-ink: colours are ignored, only inverse (cursor, status bars) matters.
-    QColor fg = attr->inverse ? Qt::white : Qt::black;
-    c->p->fillRect(r, attr->inverse ? Qt::black : Qt::white);
+    QColor fg, bg;
+    KtTerm::cellColours(attr, c->colour, &fg, &bg);
+    c->p->fillRect(r, bg);
     if (len) {
         c->p->setFont(attr->bold ? *c->bold : *c->font);
         c->p->setPen(fg);
@@ -363,7 +408,7 @@ static int kt_draw_cell(struct tsm_screen *, uint64_t, const uint32_t *ch, size_
 
 void KtTerm::repaintDirty() {
     QRect dirty;
-    DrawCtx c = {nullptr, &dirty, lastAge, cw, ch, &font, &bold};
+    DrawCtx c = {nullptr, &dirty, lastAge, cw, ch, &font, &bold, colour};
     lastAge = tsm_screen_draw(screen, kt_draw_cell, &c);
     if (!dirty.isEmpty())
         update(dirty);
@@ -372,7 +417,7 @@ void KtTerm::repaintDirty() {
 void KtTerm::paintEvent(QPaintEvent *e) {
     QPainter p(this); // clipped to the dirty rect, so only changed cells hit the e-ink
     p.fillRect(e->rect(), Qt::white); // the strip right/below the last full cell
-    DrawCtx c = {&p, nullptr, 0, cw, ch, &font, &bold};
+    DrawCtx c = {&p, nullptr, 0, cw, ch, &font, &bold, colour};
     tsm_screen_draw(screen, kt_draw_cell, &c);
 }
 

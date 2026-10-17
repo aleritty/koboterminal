@@ -35,10 +35,14 @@ tab completion and `^C` all behave the way you'd expect.
 - **A row of extra keys** sits above the keyboard with what Kobo's keyboard is missing: Esc, `/`,
   `-`, `~`, Tab, Ctrl, Alt, Home and End. Ctrl and Alt work like sticky keys: tap Ctrl, then `c`, and
   you've sent `^C`. The keyboard's own ← → arrows move the cursor in the shell, in `vi` and so on.
+- **Colour, where your Kobo has it.** On colour models (like the Libra Colour) the usual terminal
+  colours show up, in a palette tuned for colour e-ink: text stays dark and backgrounds stay light, so
+  nothing fades away. Black-and-white models stay strictly black on white, which is always the most
+  readable. Prefer black and white on a colour screen too? Open `KOBOeReader/.adds/nm/zz-koboterminal`
+  and enable the **Terminal (B/W)** entry (the file explains how).
 - **It's gentle on e-ink.** Only the characters that changed are redrawn, and output is batched so a
-  command and its result usually cost a single refresh. Colours are ignored; reverse video (the
-  cursor, status bars) is kept. It comes with its own monospace font (JetBrains Mono), since Kobo
-  doesn't ship one.
+  command and its result usually cost a single refresh. It comes with its own monospace font
+  (JetBrains Mono), since Kobo doesn't ship one.
 - **Wi-Fi stays on** while the terminal is open, so an SSH session or a download doesn't die when
   Nickel decides you've been idle long enough.
 - **It cleans up after itself.** Closing the terminal kills every process started from it. While
@@ -106,8 +110,8 @@ way is easiest:
   logread | grep KoboTerminal
   ```
 
-  and attach the output to an issue. It includes the screen layout, every resize and the first touch
-  events, which is usually enough to fix things.
+  and attach the output to an issue. It includes the screen layout, every resize, the first touch
+  events and how the colour support was detected, which is usually enough to fix things.
 
 ## Building it yourself
 

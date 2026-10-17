@@ -35,8 +35,51 @@ static bool alive(int pid) { // zombies count as dead (CI containers may lack an
     return !s.isEmpty() && i > 0 && s.at(i + 2) != 'Z';
 }
 
+static int luma(QColor c) { return (299 * c.red() + 587 * c.green() + 114 * c.blue()) / 1000; }
+
+// Colour mapping: black-and-white stays strict; colour keeps text dark and
+// backgrounds light, so nothing becomes unreadable on (washed-out) e-ink.
+static void testColours() {
+    tsm_screen_attr a = {};
+    QColor fg, bg;
+    a.fccode = TSM_COLOR_RED;
+    a.bccode = TSM_COLOR_BLUE;
+    KtTerm::cellColours(&a, false, &fg, &bg);
+    CHECK(fg == QColor(Qt::black) && bg == QColor(Qt::white)); // B/W ignores colours
+    a.inverse = 1;
+    KtTerm::cellColours(&a, false, &fg, &bg);
+    CHECK(fg == QColor(Qt::white) && bg == QColor(Qt::black));
+    a.inverse = 0;
+
+    a.fccode = TSM_COLOR_FOREGROUND;
+    a.bccode = TSM_COLOR_BACKGROUND;
+    KtTerm::cellColours(&a, true, &fg, &bg);
+    CHECK(fg == QColor(Qt::black) && bg == QColor(Qt::white)); // defaults
+    for (int code = 0; code < 16; code++) { // every ANSI colour readable on the default background
+        a.fccode = code;
+        KtTerm::cellColours(&a, true, &fg, &bg);
+        CHECK(luma(bg) - luma(fg) > 100);
+    }
+    a.fccode = -1; // 24-bit bright yellow text
+    a.fr = 255; a.fg = 255; a.fb = 0;
+    KtTerm::cellColours(&a, true, &fg, &bg);
+    CHECK(luma(fg) <= 110);
+    a.fccode = TSM_COLOR_FOREGROUND;
+    for (int code = 0; code < 16; code++) { // coloured backgrounds stay light
+        a.bccode = code;
+        KtTerm::cellColours(&a, true, &fg, &bg);
+        CHECK(luma(bg) >= 150);
+    }
+    a.bccode = TSM_COLOR_BACKGROUND;
+    a.fccode = TSM_COLOR_GREEN;
+    a.inverse = 1;
+    KtTerm::cellColours(&a, true, &fg, &bg);
+    CHECK(luma(fg) > luma(bg)); // inverse: light text on a dark colour
+}
+
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
+    testColours();
     char tmpl[] = "/tmp/kt_test_XXXXXX";
     QString dir = QString::fromLatin1(mkdtemp(tmpl));
     QByteArray d = dir.toUtf8();

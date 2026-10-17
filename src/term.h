@@ -14,6 +14,7 @@
 
 class QSocketNotifier;
 struct tsm_screen;
+struct tsm_screen_attr;
 struct tsm_vte;
 
 // KtTerm is a terminal widget: a shell on a real PTY, parsed by libtsm, drawn
@@ -32,6 +33,12 @@ public:
     // Ctrl/Alt combos. For text, keysym = ASCII code (0 if none) and unicode = the char.
     void sendKey(uint32_t keysym, unsigned mods = 0, uint32_t unicode = 0xffffffff);
     QPointer<QObject> exitTarget;              // gets reject() when the shell exits
+    bool colour = false;                       // colour e-ink: draw ANSI colours (else black on white)
+
+    // The colours a cell is drawn with. Colour mode keeps text dark and
+    // backgrounds light (readable on washed-out colour e-ink); mono is black on
+    // white, swapped for inverse video.
+    static void cellColours(const tsm_screen_attr *attr, bool colour, QColor *fg, QColor *bg);
     int cellHeight() const { return ch; }
     QSize sizeHint() const override { return hint; }
     QPointer<QObject> tapTarget;               // tapMethod is invoked on it on a tap (opens a keyboard)
