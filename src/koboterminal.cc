@@ -228,8 +228,9 @@ static void kt_dump(QWidget *w, int depth = 0) {
 class KtFit : public QObject {
 public:
     // box: the visible dialog box (Nickel's 'frame'), centred above the keyboard.
-    KtFit(QDialog *d, KtTerm *term, QWidget *box, int screenHeight)
-        : QObject(d), d(d), term(term), box(box), screenHeight(screenHeight) {
+    // keys: the last widget in the box (the key bar).
+    KtFit(QDialog *d, KtTerm *term, QWidget *box, QWidget *keys, int screenHeight)
+        : QObject(d), d(d), term(term), box(box), keys(keys), screenHeight(screenHeight) {
         timer.setSingleShot(true);
         timer.setInterval(50); // let Nickel's layouts settle first
         connect(&timer, &QTimer::timeout, this, [this]() { fit(); });
@@ -265,6 +266,7 @@ private:
     QDialog *d;
     KtTerm *term;
     QWidget *box;
+    QWidget *keys;
     int screenHeight;
     QTimer timer;
     QPointer<QWidget> keyboard;
@@ -293,7 +295,16 @@ private:
         if (keyboard->isVisibleTo(d) && keyboard->height() < screenHeight / 8)
             return; // not laid out yet (before the first show): the Show event refits
         int limit = keyboard->isVisibleTo(d) ? screenHeight - keyboard->height() : screenHeight;
-        int spare = limit - box->height();
+        // What the content needs, not the box's current height: when the keyboard
+        // reappears Nickel squeezes the box into the space above it at once,
+        // the tall terminal overflows and the key bar is clipped, while the box
+        // height alone already looks right.
+        int bottomPad = box->height() - box->contentsRect().bottom() - 1 + (box->layout() ? box->layout()->contentsMargins().bottom() : 0);
+        int need = keys->mapTo(box, QPoint(0, keys->height())).y() + bottomPad;
+        int spare = limit - need;
+        nh_log("fit: keyboard %s, limit %d, box %dx%d+%d, need %d, terminal %d -> %d",
+               keyboard->isVisibleTo(d) ? "shown" : "hidden", limit, box->width(), box->height(),
+               box->mapToGlobal(QPoint(0, 0)).y(), need, term->height(), qMax(3 * term->cellHeight(), term->height() + spare));
         int h = qMax(3 * term->cellHeight(), term->height() + spare);
         if (h != term->height()) {
             term->setFixedHeight(h);
@@ -385,7 +396,7 @@ static void kt_open() {
         content->setContentsMargins(0, 0, 0, 0);
         content->layout()->setContentsMargins(0, 0, 0, 0);
         content->layout()->setSpacing(2);
-        fitter = new KtFit(d, term, frame, scr.height());
+        fitter = new KtFit(d, term, frame, row, scr.height());
     } else {
         nh_log("dialog layout not recognised; keeping Nickel's sizes");
     }
