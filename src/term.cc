@@ -327,12 +327,13 @@ void KtTerm::readPty() {
         flush.start();
 }
 
-// The 16 ANSI colours as text colours, darkened and saturated for colour
-// e-ink. White and light grey would vanish on the white background, so they
-// become greys dark enough to read.
+// The 16 ANSI colours as text colours for colour e-ink: fully saturated
+// mid-tones (colour e-ink shows hue best there; dark shades look black), each
+// still dark enough to read on white. White and light grey would vanish on
+// the white background, so they become greys.
 static const QRgb kt_ansi[16] = {
-    0x000000, 0xb00000, 0x007000, 0x8a6200, 0x0035c8, 0x9a009a, 0x006f8a, 0x505050,
-    0x404040, 0xe00000, 0x009000, 0xa07800, 0x2050ff, 0xc000c0, 0x008fb0, 0x303030,
+    0x000000, 0xe00000, 0x00a000, 0xb88a00, 0x0040ff, 0xd000d0, 0x0090b0, 0x505050,
+    0x404040, 0xff2020, 0x00c000, 0xc89600, 0x4060ff, 0xf020f0, 0x00a8d0, 0x303030,
 };
 
 static int kt_luma(QColor c) { return (299 * c.red() + 587 * c.green() + 114 * c.blue()) / 1000; }
@@ -343,9 +344,11 @@ static QColor kt_darken(QColor c, int max) {
     return l <= max ? c : QColor(c.red() * max / l, c.green() * max / l, c.blue() * max / l);
 }
 
-// A light tint (35% colour, 65% white): backgrounds stay light, text stays readable.
+// A background tint: as much colour as possible (up to 60%) while keeping
+// luminance >= 150, so black text on it stays readable.
 static QColor kt_tint(QColor c) {
-    return QColor(255 - (255 - c.red()) * 35 / 100, 255 - (255 - c.green()) * 35 / 100, 255 - (255 - c.blue()) * 35 / 100);
+    int room = 255 - kt_luma(c), pct = room > 0 ? qMin(60, 105 * 100 / room) : 60;
+    return QColor(255 - (255 - c.red()) * pct / 100, 255 - (255 - c.green()) * pct / 100, 255 - (255 - c.blue()) * pct / 100);
 }
 
 void KtTerm::cellColours(const tsm_screen_attr *attr, bool colour, QColor *fg, QColor *bg) {
@@ -357,7 +360,7 @@ void KtTerm::cellColours(const tsm_screen_attr *attr, bool colour, QColor *fg, Q
         if (f >= 0 && f < 16)
             *fg = QColor(kt_ansi[f]);
         else if (f < 0)
-            *fg = kt_darken(QColor(attr->fr, attr->fg, attr->fb), 110); // 256-colour / 24-bit
+            *fg = kt_darken(QColor(attr->fr, attr->fg, attr->fb), 140); // 256-colour / 24-bit, like the palette
         else
             *fg = Qt::black; // default foreground
         if (b >= 0 && b < 16)
@@ -397,7 +400,9 @@ static int kt_draw_cell(struct tsm_screen *, uint64_t, const uint32_t *ch, size_
     KtTerm::cellColours(attr, c->colour, &fg, &bg);
     c->p->fillRect(r, bg);
     if (len) {
-        c->p->setFont(attr->bold ? *c->bold : *c->font);
+        // Coloured text in bold: thin strokes barely pick up colour on colour e-ink.
+        bool coloured = c->colour && attr->fccode != TSM_COLOR_FOREGROUND && attr->fccode != TSM_COLOR_BLACK;
+        c->p->setFont(attr->bold || coloured ? *c->bold : *c->font);
         c->p->setPen(fg);
         c->p->drawText(r, Qt::AlignLeft | Qt::AlignVCenter, QString::fromUcs4(reinterpret_cast<const uint*>(ch), len));
     }

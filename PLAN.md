@@ -97,7 +97,9 @@ user and are not tracked.
 ## Colour
 
 `KtTerm::cellColours` maps libtsm's colours: B/W is black on white (+ inverse);
-colour mode uses darkened ANSI text colours and light background tints, so text
+colour mode uses saturated mid-tone text colours (colour e-ink shows hue best
+there), coloured text in bold (thin strokes barely pick up colour), and
+background tints as strong as possible while keeping luminance >= 150, so text
 is always dark on light (asserted in tests/term_test.cc). Colour is used only
 when `kt_colour_screen()` is sure: first a Nickel `Device` colour method (names
 guessed; the log says which resolved), else the codename from

@@ -63,7 +63,7 @@ static void testColours() {
     a.fccode = -1; // 24-bit bright yellow text
     a.fr = 255; a.fg = 255; a.fb = 0;
     KtTerm::cellColours(&a, true, &fg, &bg);
-    CHECK(luma(fg) <= 110);
+    CHECK(luma(fg) <= 140 && 255 - luma(fg) > 100);
     a.fccode = TSM_COLOR_FOREGROUND;
     for (int code = 0; code < 16; code++) { // coloured backgrounds stay light
         a.bccode = code;
