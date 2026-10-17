@@ -33,8 +33,9 @@ tab completion and `^C` all behave the way you'd expect.
 - **Swipe down** to read back through older output (about 1000 lines), **swipe up** to come back.
   Typing anything jumps straight back to the live screen.
 - **A row of extra keys** sits above the keyboard with what Kobo's keyboard is missing: Esc, `/`,
-  `-`, `~`, Tab, Ctrl, Alt, Home and End. Ctrl and Alt work like sticky keys: tap Ctrl, then `c`, and
-  you've sent `^C`. The keyboard's own ← → arrows move the cursor in the shell, in `vi` and so on.
+  `-`, `~`, ↑ ↓, Tab, Ctrl, Alt, Home and End. Ctrl and Alt work like sticky keys: tap Ctrl, then `c`,
+  and you've sent `^C`. ↑ ↓ bring back previous commands; the keyboard's own ← → move the cursor in
+  the shell, in `vi` and so on.
 - **Colour, where your Kobo has it.** On colour models (like the Libra Colour) the usual terminal
   colours show up, in a palette tuned for colour e-ink: text stays dark and backgrounds stay light, so
   nothing fades away. Black-and-white models stay strictly black on white, which is always the most

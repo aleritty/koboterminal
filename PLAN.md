@@ -30,7 +30,7 @@ ConfirmationDialog (Nickel's own, via dlsym — symbols copied from NickelDBus)
   + N3ConfirmationTextEditField  -> Nickel on-screen keyboard
   + KtTerm (addWidget)           -> forkpty("/bin/sh") + libtsm, grid repainted per dirty cell,
                                     1000-line scrollback (swipe), tap opens the keyboard
-  + key rows (addWidget)         -> Esc / - ~ ⌨ | Tab Ctrl Alt Home End (KtKey: touch-aware,
+  + key rows (addWidget)         -> Esc / - ↑ ~ ⌨ | Tab Ctrl Alt ↓ Home End (KtKey: touch-aware,
                                     Kobo's Qt sends QTouchEvents, QPushButton needs a left click)
   + KtWifiKeepAlive              -> vetoes WirelessWatchdog::aboutToKillWifi while open
   + KtFit                        -> terminal height (pixel-exact) so the dialog ends at the

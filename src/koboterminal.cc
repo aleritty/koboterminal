@@ -157,13 +157,16 @@ protected:
     }
 };
 
-// The keys Nickel's keyboard lacks. No arrow keys: Nickel's keyboard ← → are
-// forwarded (see the text field below), swiping scrolls; ⌨ shows/hides it.
+// The keys Nickel's keyboard lacks: ↑ ↓ (its own ← → are forwarded, see the
+// text field below), Ctrl/Alt, Esc, Tab...; ⌨ shows/hides Nickel's keyboard.
 static KtMods kt_keys(QWidget *box, KtTerm *term, int keyHeight, QWidget *dialog, QObject *field) {
     enum Kind { Text, Key, Ctrl, Alt, Kbd };
-    static const struct { const char *label, *text; uint32_t keysym; Kind kind; } keys[2][5] = {
-        {{"Esc", "\x1b", 0, Text}, {"/", "/", 0, Text}, {"-", "-", 0, Text}, {"~", "~", 0, Text}, {"⌨", 0, 0, Kbd}},
-        {{"Tab", "\t", 0, Text}, {"Ctrl", 0, 0, Ctrl}, {"Alt", 0, 0, Alt}, {"Home", 0, XKB_KEY_Home, Key}, {"End", 0, XKB_KEY_End, Key}},
+    static const int R = 2, C = 6;
+    static const struct { const char *label, *text; uint32_t keysym; Kind kind; } keys[R][C] = {
+        {{"Esc", "\x1b", 0, Text}, {"/", "/", 0, Text}, {"-", "-", 0, Text}, {"\u2191", 0, XKB_KEY_Up, Key},
+         {"~", "~", 0, Text}, {"\u2328", 0, 0, Kbd}},
+        {{"Tab", "\t", 0, Text}, {"Ctrl", 0, 0, Ctrl}, {"Alt", 0, 0, Alt}, {"\u2193", 0, XKB_KEY_Down, Key},
+         {"Home", 0, XKB_KEY_Home, Key}, {"End", 0, XKB_KEY_End, Key}},
     };
     QGridLayout *grid = new QGridLayout(box);
     grid->setContentsMargins(0, 0, 0, 0);
@@ -173,20 +176,20 @@ static KtMods kt_keys(QWidget *box, KtTerm *term, int keyHeight, QWidget *dialog
     int h = keyHeight;
     QFont font = kt_font(h * 9 / 20); // labels fill the key, the key itself stays the same size
     KtMods mods = {nullptr, nullptr};
-    KtKey *b[2][5];
-    for (int r = 0; r < 2; r++)
-        for (int c = 0; c < 5; c++)
+    KtKey *b[R][C];
+    for (int r = 0; r < R; r++)
+        for (int c = 0; c < C; c++)
             grid->addWidget(b[r][c] = new KtKey(QString::fromUtf8(keys[r][c].label), font, h), r, c);
-    for (int r = 0; r < 2; r++)
-        for (int c = 0; c < 5; c++)
+    for (int r = 0; r < R; r++)
+        for (int c = 0; c < C; c++)
             if (keys[r][c].kind == Ctrl)
                 mods.ctrl = b[r][c];
             else if (keys[r][c].kind == Alt)
                 mods.alt = b[r][c];
     mods.ctrl->setCheckable(true);
     mods.alt->setCheckable(true);
-    for (int r = 0; r < 2; r++) {
-        for (int c = 0; c < 5; c++) {
+    for (int r = 0; r < R; r++) {
+        for (int c = 0; c < C; c++) {
             const char *text = keys[r][c].text;
             uint32_t keysym = keys[r][c].keysym;
             switch (keys[r][c].kind) {
