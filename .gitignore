@@ -1,7 +1,17 @@
-# Build directories & packaged output (recreated by scripts/build.sh)
-/dist/
-/build/
-/build-*/
-
-# Docker toolchain scratch HOME created by scripts/build.sh
+# make gitignore
+.kdev4/
+*.kdev4
+.kateconfig
+.vscode/
+.idea/
+.clangd/
+.cache/
+compile_commands.json
+/KoboRoot.tgz
+/src/libkoboterminal.so
+/src/koboterminal.o
 /.nickeltc-home/
+/NickelHook/nhplugin.json
+/NickelHook/*.o
+/NickelHook/*.moc
+/dist/
