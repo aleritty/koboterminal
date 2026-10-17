@@ -1,18 +1,20 @@
-# KoboTerminal — Plan (native-qt branch)
+# KoboTerminal — Design notes
 
 Goal: NickelMenu entry opens a native terminal-like dialog inside Nickel.
 
 ## Why previous attempts failed
 
-- `nicklhook-way`: a hand-rolled NickelHook clone (`nh_runtime.c`) built with
-  meson instead of the real NickelHook + NickelTC Makefile. Mangled symbols
-  were hand-typed and wrong (`_ZN13QLineEdit6setTextERK7QString`,
-  `...17getConfirmationDialog...`), and it tried to PLT-hook
-  `nm_action_cmd_output`, which is not an exported libnm symbol. The library
-  never loaded, and even if it had, init would have failed.
-- `webview-way`: daemon + xterm.js in `nickel_browser`. Untested; kept on its
-  branch as a fallback.
-- `main`/`dbus-way`: standalone FBInk app, fights Nickel for the screen.
+Earlier approaches (their branches were removed at 1.0.0; the commits before
+"Restart on real NickelHook" are their history):
+
+- Hand-rolled NickelHook clone (`nh_runtime.c`) built with meson instead of
+  the real NickelHook + NickelTC Makefile. Mangled symbols were hand-typed and
+  wrong (`_ZN13QLineEdit6setTextERK7QString`, `...17getConfirmationDialog...`),
+  and it tried to PLT-hook `nm_action_cmd_output`, which is not an exported
+  libnm symbol. The library never loaded, and even if it had, init would have
+  failed.
+- Daemon + xterm.js in `nickel_browser` (the "WIP: webview approach" commit). Never tested.
+- Standalone FBInk app: fights Nickel for the screen and touch input.
 
 ## Architecture
 
