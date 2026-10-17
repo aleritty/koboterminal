@@ -26,12 +26,17 @@ public:
 
     bool start();                              // spawn the shell
     void send(QByteArray const& bytes);        // raw input to the PTY
-    void sendKey(uint32_t keysym);             // XKB keysym (arrows etc.), honours app cursor mode
+    // A key with modifiers (TSM_*_MASK), encoded by libtsm: honours app cursor mode,
+    // Ctrl/Alt combos. For text, keysym = ASCII code (0 if none) and unicode = the char.
+    void sendKey(uint32_t keysym, unsigned mods = 0, uint32_t unicode = 0xffffffff);
     QPointer<QObject> exitTarget;              // gets reject() when the shell exits
+    QPointer<QObject> tapTarget;               // gets tapped() on a tap (opens Nickel's keyboard)
 
 protected:
     void paintEvent(QPaintEvent *) override;
     void resizeEvent(QResizeEvent *) override;
+    void mousePressEvent(QMouseEvent *) override;
+    void mouseReleaseEvent(QMouseEvent *) override;
 
 private:
     struct tsm_screen *screen = nullptr;
@@ -44,7 +49,10 @@ private:
     uint_fast32_t lastAge = 0; // tsm_age_t at the last repaint
     QFont font, bold;
     int cw, ch;             // cell size in pixels
+    int pressY = 0;         // where the current touch started
+    bool scrolled = false;  // viewing scrollback
 
+    void writePty(const char *data, size_t len);
     void readPty();
     void shellExited();
     void repaintDirty();

@@ -12,6 +12,7 @@
 
 #include <QCoreApplication>
 #include <QFontMetrics>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QSocketNotifier>
 
@@ -73,10 +74,10 @@ KtTerm::KtTerm(QFont const& f, int cols, int rows, QWidget *parent) : QWidget(pa
     setAttribute(Qt::WA_OpaquePaintEvent);
 
     tsm_screen_new(&screen, nullptr, nullptr);
-    tsm_screen_set_max_sb(screen, 0); // no scrollback UI, so don't keep any
+    tsm_screen_set_max_sb(screen, 1000); // ponytail: ~1000 lines of history; swipe to page through
     tsm_screen_resize(screen, cols, rows);
     tsm_vte_new(&vte, screen, [](struct tsm_vte *, const char *u8, size_t len, void *self) {
-        static_cast<KtTerm*>(self)->send(QByteArray::fromRawData(u8, len));
+        static_cast<KtTerm*>(self)->writePty(u8, len); // terminal replies: don't leave scrollback
     }, this, nullptr, nullptr);
 
     flush.setSingleShot(true);
@@ -141,7 +142,7 @@ bool KtTerm::start() {
             signal(s, SIG_DFL);
         for (int fd = 3; fd < maxfd; fd++)
             ::close(fd);
-        if (chdir("/")) {} // can't fail for "/"; the braces silence warn_unused_result
+        if (chdir("/mnt/onboard") && chdir("/")) {} // user storage; the braces silence warn_unused_result
         execve(sh, argv, envp.data());
         _exit(127);
     }
@@ -176,10 +177,20 @@ void KtTerm::shellExited() {
     exitTarget = nullptr; // once
 }
 
+// User input jumps back from scrollback to the live screen, like any terminal.
 void KtTerm::send(QByteArray const& b) {
+    if (scrolled) {
+        scrolled = false;
+        tsm_screen_sb_reset(screen);
+        repaintDirty();
+    }
+    writePty(b.constData(), b.size());
+}
+
+void KtTerm::writePty(const char *data, size_t len) {
     // ponytail: drops the rest if the PTY input buffer (~4 KB) is full; only huge pastes hit it.
-    for (int off = 0; master >= 0 && off < b.size();) {
-        ssize_t n = write(master, b.constData() + off, b.size() - off);
+    for (size_t off = 0; master >= 0 && off < len;) {
+        ssize_t n = write(master, data + off, len - off);
         if (n > 0) {
             off += n;
         } else if (n < 0 && errno != EINTR) {
@@ -190,8 +201,30 @@ void KtTerm::send(QByteArray const& b) {
     }
 }
 
-void KtTerm::sendKey(uint32_t keysym) {
-    tsm_vte_handle_keyboard(vte, keysym, 0, 0, TSM_VTE_INVALID);
+void KtTerm::sendKey(uint32_t keysym, unsigned mods, uint32_t unicode) {
+    send(QByteArray()); // leave scrollback
+    tsm_vte_handle_keyboard(vte, keysym, keysym < 0x80 ? keysym : 0, mods, unicode);
+}
+
+void KtTerm::mousePressEvent(QMouseEvent *e) {
+    pressY = e->y();
+}
+
+// Swipe down shows older output, swipe up newer, a page at a time (one e-ink
+// refresh per page). A tap opens the keyboard.
+void KtTerm::mouseReleaseEvent(QMouseEvent *e) {
+    int dy = e->y() - pressY;
+    if (qAbs(dy) < 2 * ch) {
+        if (tapTarget)
+            QMetaObject::invokeMethod(tapTarget, "tapped");
+        return;
+    }
+    if (dy > 0)
+        tsm_screen_sb_page_up(screen, 1);
+    else
+        tsm_screen_sb_page_down(screen, 1);
+    scrolled = tsm_screen_sb_get_line_pos(screen) < tsm_screen_sb_get_line_count(screen);
+    repaintDirty();
 }
 
 void KtTerm::readPty() {

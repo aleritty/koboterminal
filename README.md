@@ -30,10 +30,15 @@
   and on-screen keyboard. Nothing to launch, and Nickel keeps running.
 - **Real PTY.** `/bin/sh` runs on a pseudo-terminal and output is parsed by
   [libtsm](https://github.com/kmscon/libtsm), so `vi`, `top`, `less`, job control and `^C` work.
-- **Extra keys.** A button row adds Ctrl (applies to the next key), ^C, Esc, Tab and the arrows,
-  which Nickel's keyboard lacks.
+- **Extra keys.** Two rows of the keys Nickel's keyboard lacks, in
+  [Termux](https://wiki.termux.com/wiki/Touch_Keyboard)'s default layout: Esc, `/`, `-`, Home, ↑,
+  End, PgUp / Tab, Ctrl, Alt, ←, ↓, →, PgDn. Ctrl and Alt apply to the next key you press.
+- **Scrollback.** About 1000 lines; swipe down on the terminal for older output, up for newer.
 - **E-ink friendly.** Only changed cells are redrawn, at most every 150 ms. Colours are ignored;
-  inverse video (cursor, status bars) is kept.
+  inverse video (cursor, status bars) is kept. Bundled monospace font (JetBrains Mono), since Kobo
+  firmware ships none.
+- **Wi-Fi stays on** while the terminal is open (Nickel's idle Wi-Fi shutdown is vetoed), so SSH
+  sessions and downloads keep working.
 - **Clean.** Closing the dialog kills everything the shell started. Nothing runs or polls while
   the terminal is closed. Uninstalling removes every file the mod created.
 
@@ -57,22 +62,27 @@ This installs two files:
 | File | Purpose |
 | --- | --- |
 | `/usr/local/Kobo/imageformats/libkoboterminal.so` | The mod (Nickel loads it at startup) |
-| `/mnt/onboard/.adds/nm/koboterminal` | The NickelMenu entry (`KOBOeReader/.adds/nm/koboterminal`) |
+| `/mnt/onboard/.adds/nm/zz-koboterminal` | The NickelMenu entry; the `zz-` prefix puts it last in the menu |
 
 ## Usage
 
-Open NickelMenu and tap **Terminal**. Tap the text field to bring up the keyboard; keys go to the
-shell as you type. **Enter** (or the keyboard's Go key) sends Enter, **Close** ends the session.
+Open NickelMenu and tap **Terminal**. The shell starts in `/mnt/onboard` (the `KOBOeReader` drive).
 
-Closing the dialog kills every process started from it. To keep something running afterwards,
-start it in its own session: `setsid telnetd -l /bin/sh &`.
+- Tap the terminal to bring up the keyboard; keys go to the shell as you type. The keyboard's Go
+  key is Enter.
+- Swipe down on the terminal to page back through older output; typing jumps back to the bottom.
+- `^C` (interrupt the running command) is **Ctrl** then **c**. The arrows move the cursor in the
+  shell's line editor and in programs like `vi` or `less`.
+- The **X** closes the terminal and kills every process started from it. To keep something
+  running afterwards, start it in its own session: `setsid telnetd -l /bin/sh &`.
+- Connecting USB in storage mode closes the terminal first, so the drive can be shared.
 
 ## Uninstall
 
 Every method below removes all of the mod's traces:
 
 - the library;
-- the menu entry;
+- the menu entry (current and old name);
 - the `/tmp/koboterminal.fifo` pipe and `/tmp/koboterminal_history` shell history;
 - `KOBOeReader/.kobo/KoboTerminal_*.log` crash logs;
 - leftovers from earlier development builds: the `KOBOeReader/.adds/koboterminal/` folder and a
@@ -83,7 +93,7 @@ Every method below removes all of the mod's traces:
 and the mod removes itself on startup. The Terminal menu item may stay visible until the next reboot.
 
 **Over USB, without the package:** create an empty file named `koboterminal_uninstall` in the root of
-`KOBOeReader`, or delete `KOBOeReader/.adds/nm/koboterminal`. Eject and reboot. The mod removes
+`KOBOeReader`, or delete `KOBOeReader/.adds/nm/zz-koboterminal`. Eject and reboot. The mod removes
 itself on startup.
 
 **Fully manual, over SSH or telnet** (works even if the mod no longer loads):
@@ -91,7 +101,7 @@ itself on startup.
 ```sh
 rm -f /usr/local/Kobo/imageformats/libkoboterminal.so \
       /usr/local/Kobo/imageformats/libkoboterminal.so.failsafe \
-      /mnt/onboard/.adds/nm/koboterminal \
+      /mnt/onboard/.adds/nm/zz-koboterminal /mnt/onboard/.adds/nm/koboterminal \
       /mnt/onboard/koboterminal_uninstall \
       /mnt/onboard/.kobo/KoboTerminal_*.log \
       /tmp/koboterminal.fifo /tmp/koboterminal_history
@@ -164,6 +174,7 @@ Vendored libraries are in the repository; nothing is downloaded at build time.
 | [libtsm](https://github.com/kmscon/libtsm) | v4.8.0 (latest) | `vendor/libtsm/` | MIT; hash table LGPL-2.1 |
 | [NickelTC](https://github.com/pgaskin/NickelTC) toolchain | `ghcr.io/pgaskin/nickeltc:1.0` (GCC 4.9.4) | Docker image | — |
 | Qt | 5.2.1, the version in Kobo firmware (from NickelTC) | toolchain sysroot | LGPL |
+| [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) NL Medium | v2.304 (latest) | `res/fonts/`, embedded in the library | OFL-1.1 |
 | [NickelMenu](https://github.com/pgaskin/NickelMenu) | runtime, latest v0.6.0 | on the device | MIT |
 | Qt 5 development headers | any 5.x (host tests only) | host | LGPL |
 
@@ -183,4 +194,5 @@ Design notes and history are in [PLAN.md](PLAN.md).
 ## License
 
 [MIT](LICENSE). NickelHook is MIT (Patrick Gaskin). libtsm is MIT, except its hash table
-(`vendor/libtsm/src/shared/shl-htable.*`), which is LGPL-2.1 (from CCAN).
+(`vendor/libtsm/src/shared/shl-htable.*`), which is LGPL-2.1 (from CCAN). JetBrains Mono is under
+the [SIL Open Font License 1.1](res/fonts/JetBrainsMono-OFL.txt).

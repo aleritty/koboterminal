@@ -10,7 +10,9 @@ override CPPFLAGS += -I$(TSM)/src/tsm -I$(TSM)/src/shared -I$(TSM)/external -I$(
 override CFLAGS   += -Wall -fvisibility=hidden -DSHL_EXPORT=
 override CXXFLAGS += -Wall -Wextra -Werror -Wno-missing-field-initializers -fvisibility=hidden -fvisibility-inlines-hidden
 override LDFLAGS  += -lutil
-override KOBOROOT += res/koboterminal:/mnt/onboard/.adds/nm/koboterminal
+override KOBOROOT += res/zz-koboterminal:/mnt/onboard/.adds/nm/zz-koboterminal
+override QRCS     += res/koboterminal.qrc
+override MOCS     += src/wifi.h
 
 override SKIPCONFIGURE += strip koboroot-uninstall
 strip:

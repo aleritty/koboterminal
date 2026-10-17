@@ -8,6 +8,8 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <QTimer>
+#include <libtsm.h>
 #include "term.h"
 
 extern "C" void nh_log(const char *fmt, ...) { (void)fmt; }
@@ -48,13 +50,15 @@ int main(int argc, char **argv) {
     CHECK(t->start());
 
     // Input reaches the shell, and the shell knows the grid size.
-    t->send("echo $((6*7)) $(stty size) > " + d + "/a\r");
-    CHECK(waitFor([&]() { return slurp(dir + "/a") == "42 14 60"; }));
+    t->send("echo $((6*7)) $(stty size) $$ > " + d + "/a\r");
+    CHECK(waitFor([&]() { return slurp(dir + "/a").startsWith("42 14 60 "); }));
+    int shell = slurp(dir + "/a").split(' ').last().toInt();
+    CHECK(alive(shell));
 
     // ^C interrupts the foreground job (signals were reset in the child).
     t->send("sh -c 'echo $$ > " + d + "/fg; exec sleep 100'\r");
     CHECK(waitFor([&]() { return !slurp(dir + "/fg").isEmpty(); }));
-    t->send("\x03");
+    t->sendKey('c', TSM_CONTROL_MASK, 'c'); // what Ctrl + typed "c" does
     t->send("echo after > " + d + "/b\r");
     CHECK(waitFor([&]() { return slurp(dir + "/b") == "after"; }, 3000));
 
@@ -67,10 +71,16 @@ int main(int argc, char **argv) {
     t->grab(); // exercise the paint path
 
     // `exit` closes the dialog; deleting the widget kills the session.
+    // `exit` closes the dialog; deleting the widget kills the session. Nothing
+    // may survive: no shell (not even a zombie, we are its parent), no job,
+    // and no cleanup timers left running in the app (no wakeups, no drain).
     t->send("exit\r");
     CHECK(waitFor([&]() { return rejected; }));
     delete t;
     CHECK(waitFor([&]() { return !alive(bg); }, 3000));
+    CHECK(waitFor([&]() { return !QFile::exists(QStringLiteral("/proc/%1").arg(shell)); }, 3000));
+    // (direct children only: the desktop Qt style may own timers of its own)
+    CHECK(waitFor([&]() { return app.findChildren<QTimer*>(QString(), Qt::FindDirectChildrenOnly).isEmpty(); }, 12000));
 
     QDir(dir).removeRecursively();
     printf("term_test: OK\n");

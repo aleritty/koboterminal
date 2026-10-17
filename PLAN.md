@@ -26,15 +26,22 @@ libkoboterminal.so  (real NickelHook, /usr/local/Kobo/imageformats/)
         |
 ConfirmationDialog (Nickel's own, via dlsym — symbols copied from NickelDBus)
   + N3ConfirmationTextEditField  -> Nickel on-screen keyboard
-  + KtTerm (addWidget)           -> forkpty("/bin/sh") + libtsm, grid repainted per dirty cell
-  + key row (addWidget)          -> Ctrl, ^C, Esc, Tab, arrows
+  + KtTerm (addWidget)           -> forkpty("/bin/sh") + libtsm, grid repainted per dirty cell,
+                                    1000-line scrollback (swipe), tap opens the keyboard
+  + key rows (addWidget)         -> Termux layout: Esc / - Home ↑ End PgUp | Tab Ctrl Alt ← ↓ → PgDn
+  + KtWifiKeepAlive              -> vetoes WirelessWatchdog::aboutToKillWifi while open
+  PlugWorkflowManager::aboutToConnect (USB storage) -> dialog reject() -> session killed
 ```
+
+The text field is collapsed to zero height when its `tapped()` signal exists
+(taps on the terminal emit it), and the terminal is moved above it so Nickel
+keeps it above the keyboard. The shell starts in `/mnt/onboard`.
 
 Typed characters go straight to the PTY (the field keeps a sentinel space so
 backspace is detectable). Closing kills the shell's whole session.
 
-Install = one `KoboRoot.tgz`: the `.so` plus `/mnt/onboard/.adds/nm/koboterminal`
-(NickelMenu reads every file in `.adds/nm/`).
+Install = one `KoboRoot.tgz`: the `.so` plus `/mnt/onboard/.adds/nm/zz-koboterminal`
+(NickelMenu reads every file in `.adds/nm/`, alphabetically; `zz-` puts the entry last).
 
 Uninstall is triggered by `/mnt/onboard/koboterminal_uninstall` existing
 (`uninstall_flag`) or the menu file missing (`uninstall_xflag`). NickelHook then
@@ -52,7 +59,8 @@ all three places:** `kt_uninstall()` in `src/koboterminal.cc`, the manual
 | Path | Created by | Removed by |
 | --- | --- | --- |
 | `/usr/local/Kobo/imageformats/libkoboterminal.so` (+ `.failsafe` during init) | KoboRoot.tgz | NickelHook |
-| `/mnt/onboard/.adds/nm/koboterminal` | KoboRoot.tgz | `kt_uninstall` |
+| `/mnt/onboard/.adds/nm/zz-koboterminal` | KoboRoot.tgz | `kt_uninstall` |
+| `/mnt/onboard/.adds/nm/koboterminal` | KoboRoot.tgz before the rename | `kt_init` (on upgrade), `kt_uninstall` |
 | `/mnt/onboard/koboterminal_uninstall` | KoboRoot-uninstall.tgz / user | NickelHook |
 | `/tmp/koboterminal.fifo` | `kt_init` (tmpfs, also gone on reboot) | `kt_uninstall` |
 | `/tmp/koboterminal_history` | shell history (`HISTFILE`, tmpfs) | `kt_uninstall` |
@@ -70,6 +78,8 @@ user and are not tracked.
 3. UI: monospace, sizing, e-ink-friendly look.
 4. Real PTY + libtsm terminal emulation (vi/top/less, ^C, job control).
 5. Full uninstall (`kt_uninstall`, `KoboRoot-uninstall.tgz`), CI on GitHub and GitLab.
+6. Device feedback: no title/buttons, menu entry last, bundled font, Termux keys,
+   scrollback, tap-to-keyboard, Wi-Fi keepalive, start in /mnt/onboard.
 
 ## Verify on device
 
