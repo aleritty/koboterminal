@@ -75,8 +75,8 @@ KtTerm::KtTerm(QFont const& f, int cols, int rows, QWidget *parent) : QWidget(pa
     tsm_screen_new(&screen, nullptr, nullptr);
     tsm_screen_set_max_sb(screen, 0); // no scrollback UI, so don't keep any
     tsm_screen_resize(screen, cols, rows);
-    tsm_vte_new(&vte, screen, [](struct tsm_vte *, const char *u8, size_t len, void *data) {
-        static_cast<KtTerm*>(data)->send(QByteArray::fromRawData(u8, len));
+    tsm_vte_new(&vte, screen, [](struct tsm_vte *, const char *u8, size_t len, void *self) {
+        static_cast<KtTerm*>(self)->send(QByteArray::fromRawData(u8, len));
     }, this, nullptr, nullptr);
 
     flush.setSingleShot(true);
@@ -86,9 +86,11 @@ KtTerm::KtTerm(QFont const& f, int cols, int rows, QWidget *parent) : QWidget(pa
 
 KtTerm::~KtTerm() {
     if (child > 0) {
-        kt_kill_session(child); // child is the session leader (forkpty)
+        // Not reaped yet, so its pid (= the session id) can't have been reused.
+        kt_kill_session(child);
         kt_reap(child);
     }
+    delete notifier; // unregister before the fd is closed
     if (master >= 0)
         ::close(master);
     if (vte)
@@ -119,6 +121,9 @@ bool KtTerm::start() {
     struct winsize ws = {};
     ws.ws_col = width() / cw;
     ws.ws_row = height() / ch;
+    long maxfd = sysconf(_SC_OPEN_MAX);
+    if (maxfd < 0 || maxfd > 65536)
+        maxfd = 65536;
 
     pid_t pid = forkpty(&master, nullptr, nullptr, &ws);
     if (pid < 0) {
@@ -134,9 +139,9 @@ bool KtTerm::start() {
         sigprocmask(SIG_SETMASK, &none, nullptr);
         for (int s = 1; s < NSIG; s++)
             signal(s, SIG_DFL);
-        for (int fd = 3; fd < 1024; fd++)
+        for (int fd = 3; fd < maxfd; fd++)
             ::close(fd);
-        if (chdir("/")) {}
+        if (chdir("/")) {} // can't fail for "/"; the braces silence warn_unused_result
         execve(sh, argv, envp.data());
         _exit(127);
     }
@@ -150,8 +155,13 @@ bool KtTerm::start() {
     // ECHILD covers Nickel ignoring SIGCHLD (children are auto-reaped then).
     connect(&reaper, &QTimer::timeout, this, [this]() {
         pid_t r = waitpid(child, nullptr, WNOHANG);
-        if (r == child || (r < 0 && errno == ECHILD))
+        if (r == child || (r < 0 && errno == ECHILD)) {
+            // Reaped: its pid may be reused from now on, so kill the leftover
+            // jobs (they still pin the session id) now and forget the pid.
+            kt_kill_session(child);
+            child = 0;
             shellExited();
+        }
     });
     reaper.start(1000);
     return true;
@@ -167,9 +177,17 @@ void KtTerm::shellExited() {
 }
 
 void KtTerm::send(QByteArray const& b) {
-    // ponytail: drops input if the PTY buffer is full (only on huge pastes)
-    if (master >= 0 && write(master, b.constData(), b.size()) < 0 && errno != EAGAIN)
-        nh_log("pty write: %m");
+    // ponytail: drops the rest if the PTY input buffer (~4 KB) is full; only huge pastes hit it.
+    for (int off = 0; master >= 0 && off < b.size();) {
+        ssize_t n = write(master, b.constData() + off, b.size() - off);
+        if (n > 0) {
+            off += n;
+        } else if (n < 0 && errno != EINTR) {
+            if (errno != EAGAIN)
+                nh_log("pty write: %m");
+            break;
+        }
+    }
 }
 
 void KtTerm::sendKey(uint32_t keysym) {
@@ -198,7 +216,6 @@ void KtTerm::readPty() {
 
 namespace {
 struct DrawCtx {
-    KtTerm *term;
     QPainter *p;          // paint pass, or null for the dirty-collection pass
     QRect *dirty;
     tsm_age_t since;
@@ -233,7 +250,7 @@ static int kt_draw_cell(struct tsm_screen *, uint64_t, const uint32_t *ch, size_
 
 void KtTerm::repaintDirty() {
     QRect dirty;
-    DrawCtx c = {this, nullptr, &dirty, lastAge, cw, ch, &font, &bold};
+    DrawCtx c = {nullptr, &dirty, lastAge, cw, ch, &font, &bold};
     lastAge = tsm_screen_draw(screen, kt_draw_cell, &c);
     if (!dirty.isEmpty())
         update(dirty);
@@ -241,7 +258,7 @@ void KtTerm::repaintDirty() {
 
 void KtTerm::paintEvent(QPaintEvent *) {
     QPainter p(this); // clipped to the dirty rect, so only changed cells hit the e-ink
-    DrawCtx c = {this, &p, nullptr, 0, cw, ch, &font, &bold};
+    DrawCtx c = {&p, nullptr, 0, cw, ch, &font, &bold};
     tsm_screen_draw(screen, kt_draw_cell, &c);
 }
 

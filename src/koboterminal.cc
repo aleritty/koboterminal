@@ -1,4 +1,5 @@
 #include <fcntl.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -102,7 +103,8 @@ static void kt_open() {
         nh_log("could not connect commitRequested");
 
     // ponytail: sizes are screen fractions, tune on device if text is too small/big.
-    QSize scr = QGuiApplication::primaryScreen()->size();
+    QScreen *screen = QGuiApplication::primaryScreen();
+    QSize scr = screen ? screen->size() : QSize(1072, 1448); // Clara HD, if Qt has no screen yet
     QFont mono(QStringLiteral("Courier"));
     mono.setStyleHint(QFont::TypeWriter);
     mono.setPixelSize(scr.width() / 45);
@@ -123,10 +125,13 @@ static void kt_open() {
 
     // Keys go to the shell as they are typed. The field always holds one
     // sentinel space, so backspace on an "empty" line still changes the text.
+    // A reentrancy guard (not blockSignals) lets Nickel's own listeners on the
+    // field still see the reset.
     static const QString S = QStringLiteral(" ");
+    static bool resetting = false;
     tle->setText(S);
     QObject::connect(tle, &QLineEdit::textChanged, term, [tle, term, ctrl](QString const& t) {
-        if (t == S)
+        if (resetting || t == S)
             return;
         if (t.isEmpty()) {
             term->send("\x7f");
@@ -141,9 +146,9 @@ static void kt_open() {
             }
             term->send(b);
         }
-        tle->blockSignals(true);
+        resetting = true;
         tle->setText(S);
-        tle->blockSignals(false);
+        resetting = false;
     });
     QObject::connect(d, &QDialog::accepted, term, [d, term]() {
         if (!d->isVisible()) // in case this firmware's Enter button calls accept()
@@ -163,7 +168,15 @@ static void kt_open() {
 // NickelMenu writes a byte to the FIFO; the notifier fires on Nickel's event
 // loop, so no polling and no threads. O_RDWR keeps a writer open, so the FIFO
 // never hits EOF (which would make the notifier spin).
+// On failure the FIFO is removed again: a FIFO without a reader would make
+// the menu's `echo` hang until NickelMenu's timeout instead of failing fast.
 static int kt_init() {
+    // init runs inside dlopen, on whatever thread Qt loaded the plugin from.
+    // Widgets may only be touched on the GUI thread, so the notifier goes there.
+    if (!QCoreApplication::instance()) {
+        nh_log("no QCoreApplication");
+        return -1;
+    }
     unlink(KT_FIFO);
     if (mkfifo(KT_FIFO, 0600)) {
         nh_log("mkfifo %s: %m", KT_FIFO);
@@ -172,20 +185,14 @@ static int kt_init() {
     int fd = open(KT_FIFO, O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
         nh_log("open %s: %m", KT_FIFO);
-        return -1;
-    }
-    // init runs inside dlopen, on whatever thread Qt loaded the plugin from.
-    // Widgets may only be touched on the GUI thread, so put the notifier there.
-    if (!QCoreApplication::instance()) {
-        nh_log("no QCoreApplication");
-        close(fd);
+        unlink(KT_FIFO);
         return -1;
     }
     QSocketNotifier *n = new QSocketNotifier(fd, QSocketNotifier::Read);
     n->moveToThread(QCoreApplication::instance()->thread());
-    QObject::connect(n, &QSocketNotifier::activated, [](int fd) {
+    QObject::connect(n, &QSocketNotifier::activated, [](int rfd) {
         char buf[64];
-        while (read(fd, buf, sizeof(buf)) > 0);
+        while (read(rfd, buf, sizeof(buf)) > 0); // drain; any number of taps opens one dialog
         kt_open();
     });
     nh_log("listening on %s", KT_FIFO);
@@ -195,11 +202,14 @@ static int kt_init() {
 // Every file this mod (or an earlier experimental build) can leave behind.
 // Keep in sync with the "Footprint" list in PLAN.md and the manual steps in
 // README.md. NickelHook itself deletes the library and the uninstall flag.
-static bool kt_rm(QString const& p) {
+static bool kt_rm(QString const& p, bool dir = false) {
     QByteArray b = QFile::encodeName(p);
-    return access(b.constData(), F_OK) || nh_delete_file(b.constData()); // nh_delete_* fails on missing paths
+    if (access(b.constData(), F_OK))
+        return true; // nh_delete_* fails on missing paths
+    return dir ? nh_delete_dir(b.constData()) : nh_delete_file(b.constData());
 }
 
+// `&` (not `&&`) on purpose: every removal is attempted even if one fails.
 static bool kt_uninstall() {
     bool ok = kt_rm(QStringLiteral(KT_MENU)) & kt_rm(QStringLiteral(KT_FIFO)) & kt_rm(QStringLiteral(KT_HISTFILE));
     QDir kobo(QStringLiteral("/mnt/onboard/.kobo")); // nh_dump_log() output from failed inits
@@ -211,7 +221,7 @@ static bool kt_uninstall() {
     if (legacy.exists()) {
         for (QString const& f : legacy.entryList(QDir::Files | QDir::Hidden))
             ok &= kt_rm(legacy.filePath(f));
-        ok &= access(QFile::encodeName(legacy.path()).constData(), F_OK) || nh_delete_dir(QFile::encodeName(legacy.path()).constData());
+        ok &= kt_rm(legacy.path(), true);
     }
     QFile menu(QStringLiteral("/mnt/onboard/.adds/nm/menu"));
     if (menu.open(QIODevice::ReadOnly)) {

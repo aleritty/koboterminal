@@ -41,7 +41,7 @@ private:
     QSocketNotifier *notifier = nullptr;
     QTimer flush;           // coalesces repaints (e-ink)
     QTimer reaper;          // notices the shell exiting
-    uint32_t lastAge = 0;   // tsm age at the last repaint
+    uint_fast32_t lastAge = 0; // tsm_age_t at the last repaint
     QFont font, bold;
     int cw, ch;             // cell size in pixels
 
