@@ -3,10 +3,10 @@
 # either via KoboRoot.tgz or scripts/sync.sh. Safe to re-run.
 set -eu
 
-NM_CONFIG=/mnt/onboard/.adds/nm/config
-MENU_LINE='menu_item:main:Terminal:cmd_output:500:quiet:koboterminal:open'
+NM_CONFIG=/mnt/onboard/.adds/nm/menu
 KTERM_DIR=/mnt/onboard/.adds/koboterminal
-KTERM_CONF="$KTERM_DIR/koboterminal.conf"
+MARKER_BEGIN='# BEGIN KOBOTERMINAL'
+MARKER_END='# END KOBOTERMINAL'
 
 echo "=== KoboTerminal Install ==="
 
@@ -19,17 +19,20 @@ fi
 mkdir -p "$KTERM_DIR"
 touch "$NM_CONFIG"
 
-if ! grep -qF "$MENU_LINE" "$NM_CONFIG" 2>/dev/null; then
-	echo "$MENU_LINE" >>"$NM_CONFIG"
-	echo "  added Terminal entry to $NM_CONFIG"
-else
-	echo "  Terminal entry already present in $NM_CONFIG"
+# Drop any prior KoboTerminal block (marker-delimited, so this survives menu
+# entries changing across versions) before re-adding the current one, so
+# upgrades don't duplicate or strand old entries.
+if grep -q "$MARKER_BEGIN" "$NM_CONFIG" 2>/dev/null; then
+	sed -i "/$MARKER_BEGIN/,/$MARKER_END/d" "$NM_CONFIG"
 fi
 
-if [ ! -f "$KTERM_CONF" ]; then
-	printf 'verbose=0\n' >"$KTERM_CONF"
-	echo "  wrote default $KTERM_CONF"
-fi
+{
+	echo "$MARKER_BEGIN"
+	cat "$KTERM_DIR/nickelmenu.conf"
+	echo "$MARKER_END"
+} >>"$NM_CONFIG"
+echo "  Menu entries set in $NM_CONFIG"
 
 echo ""
 echo "Install complete. Restart Nickel (Settings -> Quit) or reboot to activate."
+echo "Then: NickelMenu -> Terminal."

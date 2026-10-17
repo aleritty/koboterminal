@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>KoboTerminal</title>
+<link rel="stylesheet" href="/xterm.css">
+<style>
+  html, body { margin:0; padding:0; background:#000; height:100%; }
+  #term { width:100%; height:100%; }
+</style>
+</head>
+<body>
+<div id="term"></div>
+<script src="/xterm.js"></script>
+<script>
+var term = new Terminal({ cols: 80, rows: 24 });
+term.open(document.getElementById('term'));
+
+var ws = new WebSocket('ws://' + location.hostname + ':' + location.port + '/ws');
+ws.binaryType = 'arraybuffer';
+ws.onmessage = function (ev) { term.write(new Uint8Array(ev.data)); };
+ws.onclose = function () { term.write('\r\n[connection closed]\r\n'); };
+term.onData(function (data) { if (ws.readyState === 1) ws.send(data); });
+</script>
+</body>
+</html>

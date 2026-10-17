@@ -1,9 +1,0 @@
-[wrap-git]
-url = https://github.com/Aetf/libtsm.git
-revision = 6ef38081955dce12ed4b13dd74db91bb9d4e4cb1
-depth = 1
-
-diff_files = fix-declare-dependency-sources.patch
-
-[provide]
-libtsm = libtsm_dep

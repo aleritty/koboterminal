@@ -1,6 +1,0 @@
-option(
-  'with_nickelhook',
-  type: 'boolean',
-  value: false,
-  description: 'Build as a NickelHook shared library (.so), auto-loaded by Nickel via Qt plugin discovery',
-)

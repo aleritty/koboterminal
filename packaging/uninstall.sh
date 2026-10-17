@@ -2,35 +2,28 @@
 # Run on the Kobo device (as root) to remove KoboTerminal completely.
 set -eu
 
-SO_FILE=/usr/local/Kobo/imageformats/libkoboterminal.so
 KTERM_DIR=/mnt/onboard/.adds/koboterminal
-NM_CONFIG=/mnt/onboard/.adds/nm/config
-MENU_LINE='menu_item:main:Terminal:cmd_output:500:quiet:koboterminal:open'
+NM_CONFIG=/mnt/onboard/.adds/nm/menu
+MARKER_BEGIN='# BEGIN KOBOTERMINAL'
+MARKER_END='# END KOBOTERMINAL'
 
 echo "=== KoboTerminal Uninstall ==="
 
-if [ -f "$SO_FILE" ]; then
-	rm -f "$SO_FILE"
-	echo "  removed $SO_FILE"
-else
-	echo "  no shared library found at $SO_FILE"
+# Stop the running daemon (and any still-alive per-connection children —
+# they share the same process image, just fork()'d, not exec()'d).
+PIDS=$(ps | grep '[k]term-server' | awk '{print $1}') || true
+if [ -n "${PIDS:-}" ]; then
+	kill $PIDS 2>/dev/null || true
+	echo "  stopped kterm-server (pid(s): $PIDS)"
 fi
 
-if [ -f "$NM_CONFIG" ] && grep -qF "$MENU_LINE" "$NM_CONFIG"; then
-	grep -vF "$MENU_LINE" "$NM_CONFIG" >"$NM_CONFIG.tmp"
-	mv "$NM_CONFIG.tmp" "$NM_CONFIG"
-	echo "  removed Terminal entry from $NM_CONFIG"
+if [ -f "$NM_CONFIG" ] && grep -q "$MARKER_BEGIN" "$NM_CONFIG"; then
+	sed -i "/$MARKER_BEGIN/,/$MARKER_END/d" "$NM_CONFIG"
+	echo "  removed menu entries from $NM_CONFIG"
 fi
-
-for f in koboterminal.conf nickelmenu.conf lkoboterminal.log lkoboterminal.bootstrap.log install.sh uninstall.sh; do
-	if [ -f "$KTERM_DIR/$f" ]; then
-		rm -f "$KTERM_DIR/$f"
-		echo "  removed $KTERM_DIR/$f"
-	fi
-done
 
 if [ -d "$KTERM_DIR" ]; then
-	rmdir "$KTERM_DIR" 2>/dev/null && echo "  removed $KTERM_DIR" || true
+	rm -rf "$KTERM_DIR" 2>/dev/null && echo "  removed $KTERM_DIR" || true
 fi
 
 echo ""

@@ -1,6 +1,6 @@
 # KoboTerminal
 
-A terminal emulator for Kobo e-reader devices, integrated with Nickel via [NickelHook](https://github.com/pgaskin/NickelHook)-style Qt plugin auto-loading. Adds a native "Terminal" action to the NickelMenu, launching a full PTY shell inside a Qt dialog.
+A terminal emulator for Kobo e-reader devices. A tiny standalone daemon owns a PTY-backed shell and serves it over a local WebSocket; [xterm.js](https://github.com/xtermjs/xterm.js) renders it in Nickel's own browser view. NickelMenu starts the daemon and opens the view — nothing runs inside Nickel's process.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Build](https://github.com/aleritty/koboterminal/actions/workflows/build.yml/badge.svg)](https://github.com/aleritty/koboterminal/actions/workflows/build.yml)
@@ -30,41 +30,37 @@ A terminal emulator for Kobo e-reader devices, integrated with Nickel via [Nicke
 
 ## ✨ Features
 
-- **NickelMenu Integration** — Adds a "Terminal" action to the NickelMenu by hooking NickelMenu's action dispatcher in-process
-- **Full PTY Shell** — Runs a real shell process with full terminal emulation
-- **VT Escape Sequences** — Parses ANSI/VT100 escape sequences via vendored `libtsm`
-- **Native Qt Dialog** — Uses Nickel's `ConfirmationDialog` for a seamless look and feel
-- **Touch Input** — Captures user input through Nickel's `TouchLineEdit` widget
-- **Non-blocking** — PTY I/O and dialog updates are signal/slot driven, so Nickel's event loop is never blocked
-- **Boot watchdog** — self-disables if Nickel doesn't survive loading it, so a bad hook can't brick the boot flow
+- **No Nickel process injection** — no `dlopen`, no PLT hooking, no mangled C++ symbols, no Qt ABI/build-key concerns. The daemon is a plain standalone executable.
+- **Real terminal rendering** — [xterm.js](https://github.com/xtermjs/xterm.js) handles all VT100/ANSI escape sequences client-side; the daemon just relays raw bytes.
+- **Real PTY shell** — `forkpty()` + `/bin/sh` for the terminal session.
+- **Self-contained** — everything lives under `.adds/koboterminal/`; nothing touches `/usr/local/Kobo` or any system file.
+- **One tap, ephemeral** — the menu entry starts the daemon and opens the view in one action; the daemon's lifetime IS that session, so closing the view ends it — nothing lingers.
+- **Idempotent start** — the daemon binds `127.0.0.1:8090`; if a session is already open, a repeat tap's spawn just fails to bind and exits quietly.
 
 ---
 
 ## 🏗️ Architecture
 
-`libkoboterminal.so` is installed as a Qt image-format plugin (`/usr/local/Kobo/imageformats/`), which makes Nickel's own Qt plugin loader `dlopen()` it at startup — no `LD_PRELOAD` involved. A constructor then PLT-hooks NickelMenu's action dispatcher and a couple of Nickel dialog symbols.
-
 ```
-Nickel (main process)
-  └── /usr/local/Kobo/imageformats/libkoboterminal.so  (Qt auto-loads it)
-        ├── nh_runtime.c     — bootstrap constructor: symbol resolution + PLT hooking
-        ├── nickelhook.c     — nh_info/nh_hook/nh_dlsym tables, NickelMenu action hook, logging
-        ├── ui_dialog.cpp    — ConfirmationDialog + TouchLineEdit lifecycle, Qt signal/slot wiring
-        ├── pty_qt.c         — PTY fork/read/write, QSocketNotifier integration
-        ├── term_tsm.c       — libtsm screen + VTE terminal emulation
-        └── term_serialize.c — screen → plain text serialization
+NickelMenu "Terminal" (one tap)
+  ├── cmd_spawn ─────────► kterm-server (daemon, binds 127.0.0.1:8090)
+  └── chain_success:
+      nickel_browser ────► http://127.0.0.1:8090/
+                              │
+                              └── index.html + xterm.js, over a WebSocket
+                                  back to the daemon's forkpty()'d /bin/sh
 ```
 
-**Key Components:**
+`kterm-server` implements just enough HTTP to serve three static files (`index.html`, `xterm.js`, `xterm.css`) and to upgrade one path to a WebSocket (hand-rolled RFC 6455 handshake/framing — no external libraries). No VT100 parsing happens on the device side at all; xterm.js does that in the browser. The process is single-threaded and sequential: it serves the handful of static-file requests, then blocks in the relay loop once the WebSocket upgrade happens — and exits as soon as that WebSocket closes, so the daemon's lifetime is exactly the terminal session's lifetime.
+
+**Key files:**
 
 | File | Purpose |
 | --- | --- |
-| `src/nh_runtime.c` | Constructor: resolves symbols, applies PLT hooks, rolls back on failure |
-| `src/nickelhook.c` | `nh_info`/`nh_hook`/`nh_dlsym` tables, NickelMenu `cmd_output` hook, logging |
-| `src/ui_dialog.cpp` | `ConfirmationDialog`/`TouchLineEdit` lifecycle, PTY↔dialog signal/slot bridge |
-| `src/pty_qt.c` | PTY creation, read/write, `QSocketNotifier` integration |
-| `src/term_tsm.c` | VT escape sequence parser (via `libtsm`) |
-| `src/term_serialize.c` | TSM screen buffer → plain text conversion |
+| `src/kterm_server.c` | The daemon: HTTP/WebSocket server, `forkpty()` + relay loop, fork-per-connection |
+| `src/sha1.c`/`sha1.h` | Vendored SHA1, used only for the WebSocket handshake's `Sec-WebSocket-Accept` |
+| `packaging/index.html` | Terminal page: creates an xterm.js `Terminal`, wires it to a WebSocket |
+| `packaging/vendor/xterm.js`, `xterm.css` | Vendored xterm.js (MIT), served locally — no CDN/internet dependency on-device |
 
 ---
 
@@ -76,7 +72,7 @@ Requires [NickelMenu](https://pgaskin.net/NickelMenu/) already installed on the 
 
 ```bash
 scripts/bootstrap.sh   # first time only: pulls the cross toolchain image
-scripts/build.sh        # builds the library, packages dist/KoboRoot.tgz
+scripts/build.sh        # cross-builds kterm-server, packages dist/KoboRoot.tgz
 scripts/sync.sh          # pushes to a running device over SSH and activates it
 ```
 
@@ -85,10 +81,8 @@ See [packaging/README.md](packaging/README.md) for the `KoboRoot.tgz`-on-boot al
 ### Launch
 
 1. Tap the screen to bring up the **NickelMenu**
-2. Select **Terminal** from the menu
-3. The terminal dialog opens with a PTY shell
-4. Type commands in the input field, press **Enter** to run them
-5. Close the dialog to end the PTY session
+2. Select **Terminal** — starts the daemon and opens Nickel's browser view onto the shell, in one tap
+3. Type commands; close the browser view to end the session — the daemon exits with it, nothing left running
 
 ### Uninstall
 
@@ -109,15 +103,16 @@ Then restart Nickel (Settings → Quit) or reboot.
 | Docker | Any recent version | For cross-compilation |
 | Meson | ≥ 1.1 | Build system |
 | Ninja | Any | Build backend |
-| Host C/C++ compiler | Any with C11 support | For host-mode builds |
+| Host C compiler | Any with C11 support | The daemon is plain POSIX C — builds and runs natively on Linux too |
 
 ### Build
 
-**Host build** (for compile-checking/iterating on non-Kobo-specific logic):
+**Host build** (the daemon has no Kobo-specific dependency — build and run it directly for iterating/testing):
 
 ```bash
-meson setup build-host -Dwith_nickelhook=true
+meson setup build-host
 meson compile -C build-host
+./build-host/kterm-server 8090   # then open http://127.0.0.1:8090/ against packaging/ assets
 ```
 
 **Kobo cross-build:**
@@ -127,25 +122,21 @@ scripts/bootstrap.sh   # first time only
 scripts/build.sh
 ```
 
-`scripts/build.sh` cross-compiles inside `ghcr.io/pgaskin/nickeltc:1` and packages the result into `dist/KoboRoot/` and `dist/KoboRoot.tgz`. `docker/Dockerfile` builds an alternative, koxtoolchain-based toolchain image — it's not used by `scripts/build.sh` by default.
+`scripts/build.sh` cross-compiles inside `ghcr.io/pgaskin/nickeltc:1` and packages the result into `dist/KoboRoot/` and `dist/KoboRoot.tgz`.
 
 ### Project Structure
 
 ```bash
-├── src/                    # Library source
-├── include/kterm/          # Public headers
-├── vendor/nickelhook/      # Vendored NickelHook Qt-plugin auto-load trick
-├── subprojects/            # Meson subprojects (libtsm.wrap + patch)
+├── src/                    # kterm-server source (plain C, no Qt/Nickel dependency)
 ├── toolchains/             # Cross-compilation toolchain config
-├── docker/                 # Cross toolchain Dockerfile (alternative to nickeltc image)
 ├── scripts/                # Build & install scripts
 │   ├── bootstrap.sh        # First-time toolchain image pull
 │   ├── build.sh            # Cross-build + package dist/KoboRoot(.tgz)
 │   └── sync.sh             # Push to a running device over SSH + activate
 ├── packaging/              # Files installed onto the device + install/uninstall scripts
+│   └── vendor/             # Vendored xterm.js/xterm.css (MIT)
 ├── dist/                   # Build output (gitignored, recreated by build.sh)
 ├── meson.build
-├── meson_options.txt
 └── README.md
 ```
 
@@ -153,36 +144,24 @@ scripts/build.sh
 
 ## 📖 Usage
 
-The terminal is triggered from the NickelMenu (`NickelMenu → Terminal`). NickelMenu invokes `koboterminal:open`, which the hooked `nm_action_cmd_output` intercepts in-process — no external process is spawned for the trigger itself.
-
-Once the dialog is open, run any shell command; standard VT100 escape sequences are supported for rendering.
+Tapping "Terminal" runs a chained NickelMenu action: `cmd_spawn` launches `kterm-server` in the background, then `chain_success` opens Nickel's own browser view (`nickel_browser`) at `http://127.0.0.1:8090/` (a `chain_failure:dbg_toast` reports the rare case where the spawn itself couldn't happen). `cmd_spawn`'s reported success only reflects whether `/bin/sh` launched, not `kterm-server`'s own exit code, so this fires the same way whether the daemon just started or was already running (binding the port is the "already running" check) — safe to tap again while a session is active. The daemon's process lifetime is scoped to that one WebSocket session: it serves the page's static files, then blocks relaying the `forkpty()`'d `/bin/sh` over the WebSocket, and exits as soon as that WebSocket closes — closing the browser view leaves nothing running.
 
 ---
 
 ## 🔧 Troubleshooting
 
-### Terminal doesn't appear in NickelMenu
+### "Terminal" shows a connection error
 
-1. Verify the library is installed: `ls -la /usr/local/Kobo/imageformats/libkoboterminal.so` — if you instead find `libkoboterminal.so.disabled`, the boot watchdog tripped (see below).
-2. Verify the menu entry is in NickelMenu's actual config: `grep koboterminal /mnt/onboard/.adds/nm/config` — if missing, run `sh /mnt/onboard/.adds/koboterminal/install.sh`
-3. Restart Nickel after making changes.
+Check `ps | grep kterm-server` over SSH (the daemon may not have started, or exited early), and `/mnt/onboard/.adds/koboterminal/kterm-server.log` (stdout/stderr redirected there by the `cmd_spawn` line) for anything unexpected.
 
 ### Build fails
 
 1. Re-pull the toolchain image: `docker pull ghcr.io/pgaskin/nickeltc:1`
 2. Check Meson version: `meson --version` (should be ≥ 1.1)
 
-### Dialog crashes on show / boot loop
+### Menu entries missing or duplicated after upgrading
 
-The mangled Nickel symbol names this project hooks are firmware-specific and haven't been verified against every firmware version. If a hook resolves to the wrong method, calling it can crash Nickel outright.
-
-A built-in watchdog protects against this at boot: if Nickel doesn't stay up for `failsafe_delay` seconds (20s by default) after the library loads, the *next* load renames `libkoboterminal.so` to `libkoboterminal.so.disabled` and skips hooking, so Nickel starts normally without it — no SSH intervention needed to break the loop. It only guards that initial window, not a crash triggered later by actually using the terminal. See [packaging/README.md](packaging/README.md#boot-watchdog) for recovery.
-
-Check `/mnt/onboard/.adds/koboterminal/lkoboterminal.log` and `lkoboterminal.bootstrap.log` either way.
-
-### NickelMenu hook returns an error / no logs
-
-Logging goes to `/mnt/onboard/.adds/koboterminal/lkoboterminal.log`, controlled by `/mnt/onboard/.adds/koboterminal/koboterminal.conf` (`verbose=0` for errors only, `verbose=1` for detailed logs).
+`install.sh` manages a marker-delimited block (`# BEGIN KOBOTERMINAL` / `# END KOBOTERMINAL`) in NickelMenu's config, so re-running it after an upgrade replaces the whole block cleanly. If it looks wrong, re-run `sh /mnt/onboard/.adds/koboterminal/install.sh`.
 
 ---
 
@@ -194,5 +173,5 @@ This project is released under the [MIT License](LICENSE).
 
 ## 🙏 Acknowledgements
 
-- [NickelHook](https://github.com/pgaskin/NickelHook) — Qt plugin auto-load + PLT hooking technique for Nickel
-- [libtsm](https://github.com/Aetf/libtsm) — Terminal State Machine library
+- [NickelMenu](https://github.com/pgaskin/NickelMenu) — `cmd_spawn`/`nickel_browser` actions this relies on
+- [xterm.js](https://github.com/xtermjs/xterm.js) — the terminal emulator rendered client-side

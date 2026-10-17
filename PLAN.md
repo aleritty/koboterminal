@@ -1,157 +1,138 @@
-# KoboTerminal — NickelHook Integration Plan
+# KoboTerminal — Plan
+
+See [PLAN_OLD.md](PLAN_OLD.md) for the original NickelHook/Qt-plugin plan.
+That approach is abandoned — see [Why the previous approach was dropped](#why-the-previous-approach-was-dropped).
 
 ## Objective
 
-Make the KoboTerminal NickelHook shared library (`libkoboterminal.so`) functional on a Kobo e-reader:
-1. The library loads into Nickel's process via NickelHook
-2. A NickelMenu entry launches the terminal dialog (native modal window)
-3. Only at thit point a PTY is spawned.
-4. The terminal renders as similarily possible as the common terminal emulators, with an input box below and the native keyboard open. The commands sent from the input box are executed and the output rendered above the input box in the "main window"
-5. CLosing the dialog closes the PTY and frees up all the resources.
-6. The library does not slow down the device.
+A terminal emulator for Kobo e-readers, launched from NickelMenu:
+1. One NickelMenu tap starts a background daemon and opens a browser view onto it.
+2. The view renders a real terminal (proper VT100/ANSI handling) with a PTY-backed shell.
+3. Typing in the view runs commands; output renders above/inline as usual.
+4. Closing the view ends the daemon too — nothing lingers after use.
+5. Nothing is injected into Nickel's process — no crash-the-boot risk from this component at all.
 
-## Imperatives:
-1. be extremely concise, both in the code and answers.
-2. follow nickeHook documentations and directives: https://github.com/pgaskin/NickelHook
-3. 
+## Current Architecture
 
-## Current Status
+```
+NickelMenu "Terminal" (one tap)
+  ├── cmd_spawn ─────────────────► kterm-server (daemon, binds 127.0.0.1:8090)
+  ├── chain_success:
+  │   nickel_browser ────────────► http://127.0.0.1:8090/
+  │                                   │
+  │                                   └── index.html + xterm.js, over a
+  │                                       WebSocket back to the daemon's
+  │                                       forkpty()'d /bin/sh
+  └── chain_failure:
+      dbg_toast ────────────────► "Could not start koboterminal server"
+```
 
-| Area | Status |
+`kterm-server` (`src/kterm_server.c`) is a plain POSIX C daemon: no Qt, no
+`libnickel` symbol resolution, no `dlopen` into Nickel's process at all. It
+implements just enough HTTP to serve three static files and upgrade one path
+to a hand-rolled WebSocket (RFC 6455 handshake via vendored SHA1 in
+`src/sha1.c`, plus frame parsing/framing — no external libraries). All
+VT100/ANSI escape-sequence interpretation happens client-side in vendored
+[xterm.js](packaging/vendor/xterm.js); the daemon just relays raw bytes.
+
+The daemon is single-threaded and sequential, deliberately with no
+concurrency: it serves the handful of static-file requests, blocks in the
+relay loop once the WebSocket upgrades, and exits the moment that WebSocket
+closes. Its process lifetime IS the terminal session, which is what makes
+"ends when the browser is closed" true without any extra bookkeeping.
+
+NickelMenu can't run two action types from literally the same directive, but
+it does support chaining (`chain_success`/`chain_failure`/`chain_always`) —
+one menu tap runs `cmd_spawn` then `chain_success:nickel_browser` (with
+`chain_failure:dbg_toast` for the rare case `cmd_spawn` itself couldn't even
+launch `/bin/sh`). Per NickelMenu's own source, `cmd_spawn`'s success/failure
+reflects only whether `QProcess::startDetached()` managed to fork/exec — not
+`kterm-server`'s own exit code — so `chain_success` fires identically whether
+the daemon just started or was already running (binding the port is the "is
+a session already open" check). A repeat tap while one is active never spawns
+a second daemon; the second `nickel_browser` view gets an explicit, immediate
+"Terminal already in use" (HTTP 503) from the daemon's listen socket, watched
+for specifically during the relay loop so a repeat tap fails fast instead of
+hanging until the first session ends.
+
+Chaining an action onto `nickel_browser` itself to kill the daemon when the
+view closes doesn't work, and isn't needed: `nickel_browser` is
+non-blocking — it returns immediately after requesting the view open (per
+NickelMenu's own source), so a chained action would fire an instant after the
+tap, not when the view is later closed. The daemon already handles "end when
+the browser closes" correctly on its own side, by watching the actual
+WebSocket connection's lifecycle — the only signal that genuinely reflects
+when the view was torn down.
+
+## Why the previous approach was dropped
+
+The original plan (see [PLAN_OLD.md](PLAN_OLD.md)) built `libkoboterminal.so`
+as a Qt "image format plugin" auto-loaded by Nickel via `dlopen()`, PLT-hooked
+a couple of `ConfirmationDialog`/`libnickel` symbols, and rendered a terminal
+via `libtsm` inside a native Nickel dialog.
+
+That approach got the library building and packaging correctly, but it never
+successfully loaded on the target device: `libkoboterminal.so` sat in
+`/usr/local/Kobo/imageformats/` with correct permissions, but never appeared
+in the running Nickel process's `/proc/<pid>/maps` — meaning Qt's plugin
+loader never even called `dlopen()` on it. Ruled out over several rounds of
+on-device diagnosis: stale-process timing, Qt version/ABI mismatch (confirmed
+identical 5.2.1 on both sides), the debug/release build-key bit (fixed via
+`-DQT_NO_DEBUG`, still didn't help), and the plugin-directory path itself
+(confirmed correct — other real hooks like NickelMenu's own `libnm.so` load
+fine from the same directory). The root cause was never conclusively
+identified before the decision was made to abandon the technique entirely
+rather than keep debugging an opaque, firmware-specific loading mechanism.
+
+The new architecture sidesteps the whole problem: nothing needs to be
+`dlopen`'d by Nickel or Qt at all. NickelMenu's own native, well-tested
+`cmd_spawn`/`nickel_browser` actions are the only integration surface.
+
+## Imperatives
+
+1. Be extremely concise, both in the code and in communicating about it.
+2. Nothing outside `.adds/koboterminal/` — no system files, no PLT hooks.
+3. Prefer mechanisms already proven to work on this exact device (NickelMenu's
+   own actions, a plain daemon+socket) over anything requiring firmware-
+   specific reverse engineering.
+
+## Already Done
+
+| Step | Status |
 |------|--------|
-| **Build** | ✅ Compiles successfully (39KB `libkoboterminal.so`) |
-| **Library loading** | ❌ Library is incorporated but doesn't work — no menu entry, device slows down or won't wake from sleep |
-| **NickelMenu integration** | ❌ No menu entry exists to launch the terminal |
-| **Performance** | ❌ Library causes device slowdown / sleep prevention |
-| **Symbol resolution** | ⚠️ Symbols are resolved via `nh_dlsym` but may be wrong for the target firmware |
-| **Dialog rendering** | ❌ Not tested — `kterm_term_serialize()` returns empty output |
-| **Input handling** | ❌ Not tested — no input path wired up |
+| Daemon: HTTP static file serving | ✅ Built, tested locally (`curl`) |
+| Daemon: WebSocket handshake (SHA1 + base64) | ✅ Verified byte-for-byte against Python `hashlib` |
+| Daemon: WS framing (masked client→server, unmasked server→client) | ✅ Verified via a manual Python WS client |
+| Daemon: `forkpty()` + shell relay | ✅ End-to-end tested: sent a command over WS, got correct PTY output back |
+| Daemon: idempotent start (bind-as-lock) | ✅ Verified — second instance exits immediately, only one process survives |
+| Daemon: exits when the session ends | ✅ Verified — process exits right after the WebSocket closes |
+| Daemon: repeat tap while a session is active | ✅ Verified — no second daemon spawned, second view gets an immediate 503 (no hang) |
+| One-tap menu entry (`cmd_spawn` chained into `nickel_browser`) | ✅ Config written (`chain_success`/`chain_failure`, verified against NickelMenu's own source); not yet exercised against real NickelMenu |
+| Cross-build for ARM (`nickeltc:1` toolchain) | ✅ Builds clean, no warnings |
+| Packaging (`dist/KoboRoot.tgz`) | ✅ Contains only `.adds/koboterminal/*`, no `/usr/local/Kobo` |
+| `install.sh`/`uninstall.sh` (marker-delimited NickelMenu block, daemon process cleanup) | ✅ Written, not yet exercised on-device |
+| Vendored `xterm.js`/`xterm.css` (MIT) | ✅ Fetched, wired into `packaging/index.html` |
+| Repo cleanup (Qt/libtsm/PLT-hook code, unused Dockerfile/toolchain, and build machinery removed) | ✅ |
 
-## Architecture Overview
+## Missing / Not Yet Verified
 
-```
-Nickel (main process)
-  └── libnm.so (NickelMenu)
-  └── libkoboterminal.so (our module, auto-loaded from /mnt/onboard/.adds/koboterminal/)
-        ├── nickelhook.c — nh_info/nh_hook/nh_dlsym, symbol resolution
-        ├── app.c — public API (kterm_nickelmenu_trigger)
-        ├── pty_qt.c — PTY fork, QSocketNotifier integration
-        ├── ui_dialog.c — ConfirmationDialog creation, show/close
-        ├── term_tsm.c — TSM screen + VTE terminal emulation
-        ├── term_serialize.c — screen → plain text serialization
-```
-
-## Issues to Diagnose and Fix
-
-### Issue 1: No NickelMenu Entry
-
-**Problem:** No menu item exists to trigger the terminal dialog.
-
-**Root Cause:** The `kterm_nickelmenu_trigger()` function in `app.c` exists but is never called. NickelMenu cannot call C functions directly — it only supports `cmd_spawn`, `kfmon`, and built-in actions.
-
-**Plan:**
-- [ ] **TASK 1.1:** Create a NickelMenu config file (`nickelmenu.conf`) with a menu entry
-  - Option A: Use `cmd_spawn` to touch a trigger file, then add a file-watcher thread in `nickelhook.c`
-  - Option B: Use KFMon to watch a trigger file and call a function directly
-  - **Recommended:** Option A — simpler, no external dependencies
-- [ ] **TASK 1.2:** Implement a lightweight file-watcher thread in `nickelhook.c`
-  - Poll `/tmp/koboterminal.trigger` every 500ms
-  - When file appears: call `kterm_nhook_dialog_show()`, remove file, return
-  - Must be non-blocking, low CPU, not prevent sleep
-
-### Issue 2: Device Slowdown / Sleep Prevention
-
-**Problem:** The library causes device slowdown or prevents sleep.
-
-**Likely Causes:**
-- [ ] **TASK 2.1:** Check for busy-waiting or tight polling loops
-  - Review `nickelhook.c` constructor — any spin loops?
-  - Review `pty_qt.c` — QSocketNotifier setup correct?
-- [ ] **TASK 2.2:** Check for missing cleanup on dialog close
-  - `kterm_pty_qt_deinit()` must be called when dialog closes
-  - PTY child process must be reaped
-- [ ] **TASK 2.3:** Check for Qt event loop interference
-  - Nickel's event loop must not be blocked
-  - All dialog operations must be async (signal/slot, not blocking calls)
-
-### Issue 3: Symbol Resolution May Be Wrong
-
-**Problem:** The mangled C++ symbol names in `kterm_nh_dlsym[]` may not match the target firmware's `libnickel.so.1.0.0`.
-
-**Plan:**
-- [ ] **TASK 3.1:** Verify symbol names against the actual firmware
-  - Use `nm -C` or `c++filt` on the target's `libnickel.so.1.0.0`
-  - Compare resolved addresses — if NULL, symbols are wrong
-- [ ] **TASK 3.2:** Add logging to track which symbols resolve successfully
-  - Log each symbol name + resolved address
-  - If any critical symbol is NULL, log a clear error
-
-### Issue 4: Dialog Rendering Empty
-
-**Problem:** `kterm_term_serialize()` returns empty output.
-
-**Root Cause:** The function has a TODO comment: "Implement proper screen serialization using tsm_screen_draw callback".
-
-**Plan:**
-- [ ] **TASK 4.1:** Implement `kterm_serialize_screen()` using `tsm_screen_draw`
-  - Extract character grid from `tsm_screen`
-  - Strip ANSI color/attribute codes
-  - Produce plain text buffer for `ConfirmationDialog__setText`
-- [ ] **TASK 4.2:** Test with a simple `echo hello` to verify text appears
-
-### Issue 5: Input Path Not Wired
-
-**Problem:** No input path from the dialog's text field to the PTY master.
-
-**Plan:**
-- [ ] **TASK 5.1:** Wire up input signal/slot
-  - Connect `TouchLineEdit` text changes to `kterm_pty_qt_write()`
-  - Handle Enter key to send command to shell
-- [ ] **TASK 5.2:** Test with a simple command (`ls`, `echo`)
-
-## Execution Order
-
-```
-Phase 1: Diagnostics (understand why it's broken)
-  ├── TASK 2.x — Check for busy loops, missing cleanup
-  └── TASK 3.x — Verify symbol resolution
-
-Phase 2: Core Fix (make it work)
-  ├── TASK 1.x — Add NickelMenu entry + file-watcher trigger
-  ├── TASK 4.x — Implement screen serialization
-  └── TASK 5.x — Wire up input path
-
-Phase 3: Validation (verify it works)
-  ├── Build and sync to Kobo
-  ├── Test menu entry launches dialog
-  ├── Test text renders correctly
-  ├── Test input works
-  └── Verify no slowdown / sleep prevention
-```
-
-## Files to Create/Modify
-
-| File | Action | Purpose |
-|------|--------|---------|
-| `packaging/nickelmenu.conf` | **Create** | NickelMenu config with "Terminal" menu entry |
-| `src/nickelhook.c` | **Modify** | Add file-watcher thread, symbol resolution logging |
-| `src/term_serialize.c` | **Modify** | Implement `kterm_serialize_screen()` using `tsm_screen_draw` |
-| `src/ui_dialog.c` | **Modify** | Add input handling, dialog close cleanup |
-| `src/pty_qt.c` | **Modify** | Verify QSocketNotifier setup, add cleanup logging |
-
-## Success Criteria
-
-1. ✅ Library loads without slowing down the device
-2. ✅ NickelMenu entry launches terminal dialog
-3. ✅ Terminal text renders correctly (not empty)
-4. ✅ Input works (commands execute, output appears)
-5. ✅ Dialog closes cleanly, PTY deinitializes
-6. ✅ Device can sleep and wake normally
-
-## Notes
-
-- NickelMenu **cannot** call C functions directly — only shell commands or KFMon triggers
-- The library is loaded via NickelHook's auto-loading mechanism from `.adds/`
-- All Qt operations must be async (signal/slot) to not block Nickel's event loop
-- Symbol names are firmware-specific — must verify against target device
-- Logging goes to `/tmp/koboterminal.log` (not `.adds/` — filesystem is read-only)
+- **On-device install + first real end-to-end test.** Everything above was
+  validated on the host machine or via cross-compilation only — the daemon
+  has never actually run on a real Kobo yet.
+- **NickelMenu's `nickel_browser` rendering xterm.js correctly.** The
+  WebView's JS engine on this firmware is untested with xterm.js specifically
+  — unknown whether it needs a fallback (older ECMAScript features, a
+  different xterm.js build) or works as-is.
+- **On-screen/touch keyboard interaction with xterm.js's hidden textarea.**
+  xterm.js expects a real keyboard by default; whether Kobo's on-screen
+  keyboard triggers correctly when tapping into the terminal view is unknown.
+- **Sizing/viewport.** `index.html` hardcodes 80×24; whether that fits/reads
+  legibly on the actual Kobo screen resolution inside `nickel_browser` is
+  unverified — may need a smaller grid or CSS font-size tuning.
+- **`chain_success`/`chain_failure` real-world behavior.** Confirmed from
+  NickelMenu's own source (`cmd_spawn`'s success reflects only whether
+  `/bin/sh` launched), but never exercised against the real binary on this
+  device.
+- **`kterm-server.log` review.** The `cmd_spawn` line redirects stdout/stderr
+  to `.adds/koboterminal/kterm-server.log` — never yet inspected on a real
+  run.

@@ -2,7 +2,7 @@
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-BUILD_DIR=${1:-build-nickelhook}
+BUILD_DIR=${1:-build}
 IMAGE=${IMAGE:-ghcr.io/pgaskin/nickeltc:1}
 PULL_IMAGE=${PULL_IMAGE:-0}
 NICKELTC_HOME="$ROOT_DIR/.nickeltc-home"
@@ -18,7 +18,7 @@ rm -rf "$DIST_DIR"
 # Clean build directory
 rm -rf "$BUILD_DIR"
 
-echo "=== Building NickelHook shared library ==="
+echo "=== Building kterm-server ==="
 echo "Build directory: $BUILD_DIR"
 echo "Docker image: $IMAGE"
 
@@ -51,22 +51,15 @@ docker run --rm \
 		set -eu
 		export PATH="$HOME/.local/bin:/tc/arm-nickel-linux-gnueabihf/bin:$PATH"
 
-		if ! command -v meson >/dev/null 2>&1; then
-			echo "Installing Meson in container user environment..."
-			python3 -m pip install --user meson
+		# Pinned to the last meson release supporting the Python 3.7 in this
+		# toolchain image (meson 1.12+ refuses to run on it at all).
+		MESON_VERSION=1.11.2
+		if ! command -v meson >/dev/null 2>&1 || [ "$(meson --version)" != "$MESON_VERSION" ]; then
+			echo "Installing meson $MESON_VERSION in container user environment..."
+			python3 -m pip install --user "meson==$MESON_VERSION"
 		fi
 
-		if ! command -v arm-nickel-linux-gnueabihf-pkg-config >/dev/null 2>&1 && ! command -v arm-nickel-linux-gnueabihf-pkgconf >/dev/null 2>&1; then
-			echo "Error: cross pkg-config tool not found in container PATH" >&2
-			exit 1
-		fi
-
-		if ! command -v moc >/dev/null 2>&1; then
-			echo "Error: moc not found in container image." >&2
-			exit 1
-		fi
-
-		meson setup "$1" --cross-file "toolchains/kobo-cross.ini" -Dwith_nickelhook=true
+		meson setup "$1" --cross-file "toolchains/kobo-cross.ini" --buildtype=release
 		meson compile -C "$1"
 	' \
 	_build "$BUILD_DIR"
@@ -75,22 +68,24 @@ docker run --rm \
 echo ""
 echo "=== Packaging KoboRoot artifacts ==="
 rm -rf "$OUTPUT_KOBOROOT_DIR"
-mkdir -p "$OUTPUT_KOBOROOT_DIR/usr/local/Kobo/imageformats"
 mkdir -p "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal"
+KTERM_OUT="$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal"
 
-# Shared library, loaded by Nickel via Qt plugin auto-loading from imageformats.
-cp "$BUILD_DIR/libkoboterminal.so" "$OUTPUT_KOBOROOT_DIR/usr/local/Kobo/imageformats/libkoboterminal.so"
-chmod 755 "$OUTPUT_KOBOROOT_DIR/usr/local/Kobo/imageformats/libkoboterminal.so"
+cp "$BUILD_DIR/kterm-server" "$KTERM_OUT/kterm-server"
+chmod 755 "$KTERM_OUT/kterm-server"
 
-# Runtime config + docs, staged under .adds/ for install.sh/uninstall.sh and
-# for the user to find on-device.
-for f in nickelmenu.conf koboterminal.conf README.md; do
-	cp "$ROOT_DIR/packaging/$f" "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/$f"
-	chmod 644 "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/$f"
+# Vendored xterm.js frontend + our page, config, docs, install/uninstall.
+for f in index.html nickelmenu.conf README.md; do
+	cp "$ROOT_DIR/packaging/$f" "$KTERM_OUT/$f"
+	chmod 644 "$KTERM_OUT/$f"
+done
+for f in xterm.js xterm.css; do
+	cp "$ROOT_DIR/packaging/vendor/$f" "$KTERM_OUT/$f"
+	chmod 644 "$KTERM_OUT/$f"
 done
 for f in install.sh uninstall.sh; do
-	cp "$ROOT_DIR/packaging/$f" "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/$f"
-	chmod 755 "$OUTPUT_KOBOROOT_DIR/mnt/onboard/.adds/koboterminal/$f"
+	cp "$ROOT_DIR/packaging/$f" "$KTERM_OUT/$f"
+	chmod 755 "$KTERM_OUT/$f"
 done
 
 # Clean up build directory
