@@ -278,7 +278,11 @@ private:
         // the remainder is blank). Nickel centres the box above the keyboard, so
         // filling the space means box height == the keyboard's top; a box that
         // isn't centred just grows down to it.
-        int limit = keyboard->isVisible() ? keyboard->mapToGlobal(QPoint(0, 0)).y() : screenHeight;
+        // The keyboard is docked at the bottom: derive its top from its height. Its
+        // reported position is stale right after it reappears (the box is still
+        // screen-tall, so Nickel can't lay it out yet), which left the key bar
+        // hidden behind it.
+        int limit = keyboard->isVisible() ? screenHeight - keyboard->height() : screenHeight;
         int top = box->mapToGlobal(QPoint(0, 0)).y(), bottom = top + box->height();
         int spare = qAbs(top - (limit - bottom)) <= 2 ? limit - box->height() : limit - bottom;
         int h = qMax(3 * term->cellHeight(), term->height() + spare);
