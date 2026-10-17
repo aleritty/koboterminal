@@ -44,6 +44,10 @@
 
 ## Requirements
 
+> **Tested only on a Kobo Libra Colour so far.** The layout adapts to the screen and the Nickel
+> symbols are the ones NickelDBus uses across firmware 4.x, but other models are untested. Reports
+> are welcome; the plugin logs its layout to help (see [Troubleshooting](#troubleshooting)).
+
 - A Kobo e-reader on firmware 4.x (uses the same Nickel symbols as
   [NickelDBus](https://github.com/shermp/NickelDBus); firmware 4.6 and later).
 - [NickelMenu](https://github.com/pgaskin/NickelMenu) (latest release: v0.6.0).
@@ -67,6 +71,9 @@ This installs two files:
 ## Usage
 
 Open NickelMenu and tap **Terminal**. The shell starts in `/mnt/onboard` (the `KOBOeReader` drive).
+
+> The shell runs as **root**, like Nickel itself: commands can change or break the system. Know
+> what you type.
 
 - Tap anywhere on the terminal to bring up the keyboard; **⌨** hides it again (the terminal then
   uses the whole screen). Keys go to the shell as you type; the keyboard's Go key is Enter.
@@ -188,6 +195,8 @@ libtsm carries one local change, described in [vendor/libtsm/VERSION](vendor/lib
   so Nickel didn't load the library. Check that `libkoboterminal.so` is in
   `/usr/local/Kobo/imageformats/`.
 - **Logs:** `logread | grep KoboTerminal` over SSH or telnet.
+- **Layout or input problems:** `logread | grep KoboTerminal | grep -E 'layout:|fit:|input event'`
+  shows the dialog's widget tree, every resize, and the first touch events.
 - **Failed startup:** NickelHook writes the log to `KOBOeReader/.kobo/KoboTerminal_*.log`, and
   disables the mod for the next boot if Nickel crashed while loading it.
 
