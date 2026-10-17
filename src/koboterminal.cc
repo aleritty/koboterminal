@@ -94,8 +94,22 @@ static void kt_type(KtTerm *term, KtMods const& mods, QString const& s) {
     term->send(s.mid(1).toUtf8());
 }
 
-// The keys Nickel's keyboard lacks, in Termux's default extra-keys layout.
-static KtMods kt_keys(QWidget *box, KtTerm *term, QFont const& font) {
+// Nickel's on-screen keyboard (a KeyboardFrame, created lazily), either inside
+// the dialog or as its own window. Null until it exists.
+static QWidget *kt_find_keyboard(QWidget *dialog) {
+    auto is = [](QWidget *w) { return strstr(w->metaObject()->className(), "KeyboardFrame") != nullptr; };
+    for (QWidget *w : dialog->findChildren<QWidget*>())
+        if (is(w))
+            return w;
+    for (QWidget *w : QApplication::topLevelWidgets())
+        if (is(w))
+            return w;
+    return nullptr;
+}
+
+// The keys Nickel's keyboard lacks, in Termux's default extra-keys layout,
+// plus a tall key on the right that shows/hides Nickel's keyboard.
+static KtMods kt_keys(QWidget *box, KtTerm *term, QFont const& font, QWidget *dialog, QObject *field) {
     static const struct { const char *label, *text; uint32_t keysym; } keys[2][7] = {
         {{"Esc", "\x1b", 0}, {"/", "/", 0}, {"-", "-", 0}, {"Home", 0, XKB_KEY_Home},
          {"\u2191", 0, XKB_KEY_Up}, {"End", 0, XKB_KEY_End}, {"PgUp", 0, XKB_KEY_Page_Up}},
@@ -121,6 +135,18 @@ static KtMods kt_keys(QWidget *box, KtTerm *term, QFont const& font) {
             grid->addWidget(b[r][c], r, c);
         }
     }
+    QPushButton *kbd = new QPushButton(QString::fromUtf8("\u2328"));
+    kbd->setFont(font);
+    kbd->setFocusPolicy(Qt::NoFocus);
+    kbd->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    grid->addWidget(kbd, 0, 7, 2, 1);
+    QObject::connect(kbd, &QPushButton::clicked, [dialog, field]() {
+        QWidget *kb = kt_find_keyboard(dialog);
+        if (kb && kb->isVisible())
+            kb->hide(); // the way NickelDBus documents hiding it
+        else if (field)
+            QMetaObject::invokeMethod(field, "tapped"); // the field's own "open keyboard" signal
+    });
     mods.ctrl = b[1][1];
     mods.alt = b[1][2];
     mods.ctrl->setCheckable(true);
@@ -187,24 +213,14 @@ private:
     QPointer<QWidget> keyboard;
     int passes = 0;
 
-    static bool isKeyboard(QWidget *w) { return strstr(w->metaObject()->className(), "KeyboardFrame"); }
-
     void fit() {
         static bool dumped = false;
         if (!dumped) {
             dumped = true;
             kt_dump(d);
         }
-        if (!keyboard) { // created lazily by Nickel, inside the dialog or as its own window
-            for (QWidget *w : d->findChildren<QWidget*>())
-                if (isKeyboard(w))
-                    keyboard = w;
-            for (QWidget *w : QApplication::topLevelWidgets())
-                if (!keyboard && isKeyboard(w))
-                    keyboard = w;
-            if (keyboard)
-                keyboard->installEventFilter(this);
-        }
+        if (!keyboard && (keyboard = kt_find_keyboard(d)))
+            keyboard->installEventFilter(this);
         if (!keyboard) { // without it, growing could push the prompt under the keyboard
             if (!passes++)
                 nh_log("keyboard widget not found; keeping the default terminal height");
@@ -248,7 +264,6 @@ static void kt_open() {
     if (QObject *wd = WirelessWatchdog__sharedInstance ? WirelessWatchdog__sharedInstance() : nullptr)
         new KtWifiKeepAlive(wd, d);
     ConfirmationDialog__setRejectOnOutsideTap(d, false);
-    ConfirmationDialog__showCloseButton(d, true);
 
     // Nickel's field brings up its on-screen keyboard. The real object size is
     // unknown, so over-allocate like NickelDBus does; it is parented to the dialog.
@@ -277,17 +292,21 @@ static void kt_open() {
     term->exitTarget = d;
     ConfirmationDialog__addWidget(d, term);
     QWidget *row = new QWidget();
-    KtMods mods = kt_keys(row, term, kt_font(mono.pixelSize() * 3 / 4));
+    // The field's tapped() signal is what opens the keyboard. With it, taps on the
+    // terminal open the keyboard and `exit` closes, so the X goes. Without it,
+    // keep the X and the visible field, or the modal dialog could trap the user.
+    bool canTap = tle->metaObject()->indexOfSignal("tapped()") >= 0;
+    ConfirmationDialog__showCloseButton(d, !canTap);
+    KtMods mods = kt_keys(row, term, kt_font(mono.pixelSize() * 3 / 4), d, canTap ? tle : nullptr);
     row->setFixedWidth(term->width());
     ConfirmationDialog__addWidget(d, row);
     new KtFit(d, term, row, scr.height());
 
 
-    // The text field is only a keyboard receiver. If its tapped() signal (which
-    // opens the keyboard) exists, collapse the field, let a tap on the terminal
-    // open the keyboard instead, and put the terminal above the field so Nickel
-    // keeps it above the keyboard. Otherwise leave the field as it is.
-    if (tle->metaObject()->indexOfSignal("tapped()") >= 0) {
+    // The text field is only a keyboard receiver: collapse it, let a tap on the
+    // terminal open the keyboard instead, and put the terminal above the field
+    // so Nickel keeps it above the keyboard.
+    if (canTap) {
         tef->setFixedHeight(0);
         term->tapTarget = tle;
         if (QBoxLayout *l = qobject_cast<QBoxLayout*>(tef->parentWidget() ? tef->parentWidget()->layout() : nullptr)) {

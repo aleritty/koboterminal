@@ -28,7 +28,8 @@ ConfirmationDialog (Nickel's own, via dlsym — symbols copied from NickelDBus)
   + N3ConfirmationTextEditField  -> Nickel on-screen keyboard
   + KtTerm (addWidget)           -> forkpty("/bin/sh") + libtsm, grid repainted per dirty cell,
                                     1000-line scrollback (swipe), tap opens the keyboard
-  + key rows (addWidget)         -> Termux layout: Esc / - Home ↑ End PgUp | Tab Ctrl Alt ← ↓ → PgDn
+  + key rows (addWidget)         -> Termux layout: Esc / - Home ↑ End PgUp | Tab Ctrl Alt ← ↓ → PgDn,
+                                    plus a tall ⌨ key that shows/hides Nickel's keyboard
   + KtWifiKeepAlive              -> vetoes WirelessWatchdog::aboutToKillWifi while open
   + KtFit                        -> terminal rows grow/shrink so the dialog ends at the
                                     keyboard's top edge (screen bottom when it's hidden)
@@ -37,7 +38,8 @@ ConfirmationDialog (Nickel's own, via dlsym — symbols copied from NickelDBus)
 
 The text field is collapsed to zero height when its `tapped()` signal exists
 (taps on the terminal emit it), and the terminal is moved above it so Nickel
-keeps it above the keyboard. The shell starts in `/mnt/onboard`.
+keeps it above the keyboard. In that case there is no X (`exit` closes); if the
+signal is missing the X and the field stay, so the modal dialog can't trap the user. The shell starts in `/mnt/onboard`.
 
 Process tree: forkpty child = session leader, a watcher that ignores ^C/HUP,
 forks the shell, waits for it and exits. Its exit closes a pipe whose read

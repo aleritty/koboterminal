@@ -232,18 +232,22 @@ void KtTerm::sendKey(uint32_t keysym, unsigned mods, uint32_t unicode) {
 }
 
 void KtTerm::mousePressEvent(QMouseEvent *e) {
-    pressY = e->y();
+    pressPos = e->pos();
 }
 
-// Swipe down shows older output, swipe up newer, a page at a time (one e-ink
-// refresh per page). A tap opens the keyboard.
+// A tap (little movement in any direction) opens the keyboard. A vertical
+// swipe pages through scrollback: down for older output, up for newer, one
+// e-ink refresh per page. Other swipes do nothing.
 void KtTerm::mouseReleaseEvent(QMouseEvent *e) {
-    int dy = e->y() - pressY;
-    if (qAbs(dy) < 2 * ch) {
+    QPoint d = e->pos() - pressPos;
+    if (d.manhattanLength() < 2 * ch) {
         if (tapTarget)
             QMetaObject::invokeMethod(tapTarget, "tapped");
         return;
     }
+    int dy = d.y();
+    if (qAbs(dy) < qAbs(d.x()))
+        return;
     if (dy > 0)
         tsm_screen_sb_page_up(screen, 1);
     else

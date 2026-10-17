@@ -53,7 +53,7 @@ private:
     uint_fast32_t lastAge = 0; // tsm_age_t at the last repaint
     QFont font, bold;
     int cw, ch;             // cell size in pixels
-    int pressY = 0;         // where the current touch started
+    QPoint pressPos;        // where the current touch started
     bool scrolled = false;  // viewing scrollback
 
     void writePty(const char *data, size_t len);
