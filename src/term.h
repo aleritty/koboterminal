@@ -30,6 +30,9 @@ public:
     // Ctrl/Alt combos. For text, keysym = ASCII code (0 if none) and unicode = the char.
     void sendKey(uint32_t keysym, unsigned mods = 0, uint32_t unicode = 0xffffffff);
     QPointer<QObject> exitTarget;              // gets reject() when the shell exits
+    int rows() const { return height() / ch; }
+    int cellHeight() const { return ch; }
+    void setRows(int rows) { setFixedHeight(rows * ch); } // resizeEvent updates the grid and the PTY
     QPointer<QObject> tapTarget;               // gets tapped() on a tap (opens Nickel's keyboard)
 
 protected:

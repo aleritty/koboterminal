@@ -30,6 +30,8 @@ ConfirmationDialog (Nickel's own, via dlsym — symbols copied from NickelDBus)
                                     1000-line scrollback (swipe), tap opens the keyboard
   + key rows (addWidget)         -> Termux layout: Esc / - Home ↑ End PgUp | Tab Ctrl Alt ← ↓ → PgDn
   + KtWifiKeepAlive              -> vetoes WirelessWatchdog::aboutToKillWifi while open
+  + KtFit                        -> terminal rows grow/shrink so the dialog ends at the
+                                    keyboard's top edge (screen bottom when it's hidden)
   PlugWorkflowManager::aboutToConnect (USB storage) -> dialog reject() -> session killed
 ```
 

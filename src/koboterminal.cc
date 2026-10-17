@@ -1,4 +1,5 @@
 #include <fcntl.h>
+#include <string.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -7,6 +8,8 @@
 #include <QDir>
 #include <QFontDatabase>
 #include <QFile>
+#include <QApplication>
+#include <QEvent>
 #include <QGuiApplication>
 #include <QBoxLayout>
 #include <QGridLayout>
@@ -101,6 +104,11 @@ static KtMods kt_keys(QWidget *box, KtTerm *term, QFont const& font) {
     };
     QGridLayout *grid = new QGridLayout(box);
     grid->setContentsMargins(0, 0, 0, 0);
+    grid->setSpacing(4);
+    // Nickel's button style has wide padding and minimum widths; override it so
+    // all 7 columns fit the terminal's width.
+    box->setStyleSheet(QStringLiteral("QPushButton { padding: 0px; margin: 0px; min-width: 0px; min-height: 0px; }"));
+    int h = QFontMetrics(font).height() * 3 / 2;
     KtMods mods = {nullptr, nullptr};
     QPushButton *b[2][7];
     for (int r = 0; r < 2; r++) {
@@ -108,6 +116,8 @@ static KtMods kt_keys(QWidget *box, KtTerm *term, QFont const& font) {
             b[r][c] = new QPushButton(QString::fromUtf8(keys[r][c].label));
             b[r][c]->setFont(font); // Nickel's UI fonts may lack the arrows
             b[r][c]->setFocusPolicy(Qt::NoFocus); // keep the keyboard attached to the field
+            b[r][c]->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+            b[r][c]->setFixedHeight(h);
             grid->addWidget(b[r][c], r, c);
         }
     }
@@ -127,6 +137,89 @@ static KtMods kt_keys(QWidget *box, KtTerm *term, QFont const& font) {
     }
     return mods;
 }
+
+// Logs the dialog's widget tree once, to tune the layout from real devices.
+static void kt_dump(QWidget *w, int depth = 0) {
+    QRect g = w->geometry();
+    nh_log("layout: %*s%s '%s' %dx%d+%d+%d%s", depth * 2, "", w->metaObject()->className(), qPrintable(w->objectName()),
+           g.width(), g.height(), g.x(), g.y(), w->isVisible() ? "" : " hidden");
+    for (QObject *o : w->children())
+        if (o->isWidgetType())
+            kt_dump(static_cast<QWidget*>(o), depth + 1);
+}
+
+// Sizes the terminal so the dialog reaches down to Nickel's keyboard, or to
+// the bottom of the screen while the keyboard is hidden. Refits when the
+// dialog or the keyboard changes; a few passes at most per change, so a
+// dialog that re-centres itself can't make it loop.
+class KtFit : public QObject {
+public:
+    KtFit(QDialog *d, KtTerm *term, QWidget *keys, int screenHeight)
+        : QObject(d), d(d), term(term), keys(keys), screenHeight(screenHeight) {
+        timer.setSingleShot(true);
+        timer.setInterval(50); // let Nickel's layouts settle first
+        connect(&timer, &QTimer::timeout, this, [this]() { fit(); });
+        d->installEventFilter(this);
+    }
+
+protected:
+    bool eventFilter(QObject *, QEvent *e) override {
+        switch (e->type()) {
+        case QEvent::Show:
+        case QEvent::Hide:
+            passes = 0; // e.g. the keyboard appeared: allow a fresh fit
+            // fallthrough
+        case QEvent::Resize:
+        case QEvent::Move:
+            timer.start();
+        default:
+            break;
+        }
+        return false;
+    }
+
+private:
+    QDialog *d;
+    KtTerm *term;
+    QWidget *keys;
+    int screenHeight;
+    QTimer timer;
+    QPointer<QWidget> keyboard;
+    int passes = 0;
+
+    static bool isKeyboard(QWidget *w) { return strstr(w->metaObject()->className(), "KeyboardFrame"); }
+
+    void fit() {
+        static bool dumped = false;
+        if (!dumped) {
+            dumped = true;
+            kt_dump(d);
+        }
+        if (!keyboard) { // created lazily by Nickel, inside the dialog or as its own window
+            for (QWidget *w : d->findChildren<QWidget*>())
+                if (isKeyboard(w))
+                    keyboard = w;
+            for (QWidget *w : QApplication::topLevelWidgets())
+                if (!keyboard && isKeyboard(w))
+                    keyboard = w;
+            if (keyboard)
+                keyboard->installEventFilter(this);
+        }
+        if (!keyboard) { // without it, growing could push the prompt under the keyboard
+            if (!passes++)
+                nh_log("keyboard widget not found; keeping the default terminal height");
+            return;
+        }
+        if (passes++ >= 4)
+            return;
+        int limit = keyboard->isVisible() ? keyboard->mapToGlobal(QPoint(0, 0)).y() : screenHeight;
+        int spare = limit - keys->mapToGlobal(QPoint(0, keys->height())).y() - term->cellHeight() / 2;
+        int ch = term->cellHeight();
+        int rows = qMax(3, term->rows() + (spare >= 0 ? spare / ch : -((-spare + ch - 1) / ch)));
+        if (rows != term->rows())
+            term->setRows(rows);
+    }
+};
 
 static void kt_open() {
     if (kt_dlg) { // e.g. Nickel hid it (sleep, USB): bring the same session back
@@ -174,8 +267,8 @@ static void kt_open() {
     if (!QObject::connect(tef, SIGNAL(commitRequested()), d, SIGNAL(accepted())))
         nh_log("could not connect commitRequested");
 
-    // ponytail: sizes are screen fractions, tune on device if text is too small/big.
-    // 30% of the height leaves room for the key rows above Nickel's keyboard.
+    // ponytail: font size is a screen fraction; tune here if text is too small/big.
+    // The height is only a first guess: KtFit grows it down to the keyboard.
     QScreen *screen = QGuiApplication::primaryScreen();
     QSize scr = screen ? screen->size() : QSize(1072, 1448); // Clara HD, if Qt has no screen yet
     QFont mono = kt_font(scr.width() / 45);
@@ -184,8 +277,11 @@ static void kt_open() {
     term->exitTarget = d;
     ConfirmationDialog__addWidget(d, term);
     QWidget *row = new QWidget();
-    KtMods mods = kt_keys(row, term, mono);
+    KtMods mods = kt_keys(row, term, kt_font(mono.pixelSize() * 3 / 4));
+    row->setFixedWidth(term->width());
     ConfirmationDialog__addWidget(d, row);
+    new KtFit(d, term, row, scr.height());
+
 
     // The text field is only a keyboard receiver. If its tapped() signal (which
     // opens the keyboard) exists, collapse the field, let a tap on the terminal
