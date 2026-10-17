@@ -143,6 +143,7 @@ struct vte_saved_state {
 	struct tsm_screen_attr cattr;
 	tsm_vte_charset **gl;
 	tsm_vte_charset **gr;
+	enum tsm_screen_cursor_style cursor_style;
 	bool wrap_mode;
 	bool origin_mode;
 };
@@ -176,6 +177,14 @@ struct tsm_vte {
 	unsigned int mouse_event;
 	unsigned int mouse_last_col;
 	unsigned int mouse_last_row;
+	bool bracketed_paste;
+
+	tsm_vte_bell_cb bell_cb;
+	void *bell_data;
+
+	tsm_vte_led_cb led_cb;
+	void *led_data;
+	unsigned int led_state;
 
 	uint8_t (*custom_palette_storage)[3];
 	uint8_t (*palette)[3];
@@ -240,6 +249,28 @@ static uint8_t color_palette_vga[TSM_COLOR_NUM][3] = {
 
 	[TSM_COLOR_FOREGROUND]    = { 170, 170, 170 }, /* light grey */
 	[TSM_COLOR_BACKGROUND]    = {   0,   0,   0 }, /* black */
+};
+
+static uint8_t color_palette_nord[TSM_COLOR_NUM][3] = {
+	[TSM_COLOR_BLACK]         = {  59,  66,  82 }, /* black */
+	[TSM_COLOR_RED]           = { 191,  97, 106 }, /* red */
+	[TSM_COLOR_GREEN]         = { 163, 190, 140 }, /* green */
+	[TSM_COLOR_YELLOW]        = { 235, 203, 139 }, /* yellow */
+	[TSM_COLOR_BLUE]          = { 129, 161, 193 }, /* blue */
+	[TSM_COLOR_MAGENTA]       = { 180, 142, 173 }, /* magenta */
+	[TSM_COLOR_CYAN]          = { 136, 192, 208 }, /* cyan */
+	[TSM_COLOR_LIGHT_GREY]    = { 229, 233, 240 }, /* light grey */
+	[TSM_COLOR_DARK_GREY]     = {  76,  86, 106 }, /* dark grey */
+	[TSM_COLOR_LIGHT_RED]     = { 191,  97, 106 }, /* light red */
+	[TSM_COLOR_LIGHT_GREEN]   = { 163, 190, 140 }, /* light green */
+	[TSM_COLOR_LIGHT_YELLOW]  = { 235, 203, 139 }, /* light yellow */
+	[TSM_COLOR_LIGHT_BLUE]    = { 129, 161, 193 }, /* light blue */
+	[TSM_COLOR_LIGHT_MAGENTA] = { 180, 142, 173 }, /* light magenta */
+	[TSM_COLOR_LIGHT_CYAN]    = { 143, 188, 187 }, /* light cyan */
+	[TSM_COLOR_WHITE]         = { 236, 239, 244 }, /* white */
+
+	[TSM_COLOR_FOREGROUND]    = { 216, 222, 233 }, /* light grey */
+	[TSM_COLOR_BACKGROUND]    = {  46,  52,  64 }, /* black */
 };
 
 static uint8_t color_palette_solarized[TSM_COLOR_NUM][3] = {
@@ -381,6 +412,8 @@ static uint8_t (*get_palette(struct tsm_vte *vte))[3]
 
 	if (!strcmp(vte->palette_name, "custom") && vte->custom_palette_storage)
 		return vte->custom_palette_storage;
+	if (!strcmp(vte->palette_name, "nord"))
+		return color_palette_nord;
 	if (!strcmp(vte->palette_name, "solarized"))
 		return color_palette_solarized;
 	if (!strcmp(vte->palette_name, "solarized-black"))
@@ -549,6 +582,26 @@ void tsm_vte_set_mouse_cb(struct tsm_vte *vte, tsm_vte_mouse_cb mouse_cb, void *
 
 	vte->mouse_cb = mouse_cb;
 	vte->mouse_data = mouse_data;
+}
+
+SHL_EXPORT
+void tsm_vte_set_bell_cb(struct tsm_vte *vte, tsm_vte_bell_cb bell_cb, void *bell_data)
+{
+	if (!vte)
+		return;
+
+	vte->bell_cb = bell_cb;
+	vte->bell_data = bell_data;
+}
+
+SHL_EXPORT
+void tsm_vte_set_led_cb(struct tsm_vte *vte, tsm_vte_led_cb led_cb, void *led_data)
+{
+	if (!vte)
+		return;
+
+	vte->led_cb = led_cb;
+	vte->led_data = led_data;
 }
 
 static int vte_update_palette(struct tsm_vte *vte)
@@ -730,6 +783,7 @@ static void reset_state(struct tsm_vte *vte)
 	vte->saved_state.wrap_mode = true;
 	vte->saved_state.gl = &vte->g0;
 	vte->saved_state.gr = &vte->g1;
+	vte->saved_state.cursor_style = TSM_SCREEN_CURSOR_DEFAULT;
 
 	copy_fcolor(&vte->saved_state.cattr, &vte->def_attr);
 	copy_bcolor(&vte->saved_state.cattr, &vte->def_attr);
@@ -739,6 +793,7 @@ static void reset_state(struct tsm_vte *vte)
 	vte->saved_state.cattr.inverse = 0;
 	vte->saved_state.cattr.protect = 0;
 	vte->saved_state.cattr.blink = 0;
+	vte->saved_state.cattr.dim = 0;
 }
 
 static void save_state(struct tsm_vte *vte)
@@ -750,6 +805,7 @@ static void save_state(struct tsm_vte *vte)
 	vte->saved_state.gr = vte->gr;
 	vte->saved_state.wrap_mode = vte->flags & TSM_VTE_FLAG_AUTO_WRAP_MODE;
 	vte->saved_state.origin_mode = vte->flags & TSM_VTE_FLAG_ORIGIN_MODE;
+	vte->saved_state.cursor_style = tsm_screen_get_cursor_style(vte->con);
 }
 
 static void restore_state(struct tsm_vte *vte)
@@ -762,6 +818,7 @@ static void restore_state(struct tsm_vte *vte)
 		tsm_screen_set_def_attr(vte->con, &vte->cattr);
 	vte->gl = vte->saved_state.gl;
 	vte->gr = vte->saved_state.gr;
+	tsm_screen_set_cursor_style(vte->con, vte->saved_state.cursor_style);
 
 	if (vte->saved_state.wrap_mode) {
 		vte->flags |= TSM_VTE_FLAG_AUTO_WRAP_MODE;
@@ -855,11 +912,8 @@ static void do_execute(struct tsm_vte *vte, uint32_t ctrl)
 		vte_write(vte, "\x06", 1);
 		break;
 	case 0x07: /* BEL */
-		/* Sound bell tone */
-		/* TODO: I always considered this annying, however, we
-		 * should at least provide some way to enable it if the
-		 * user *really* wants it.
-		 */
+		if (vte->bell_cb)
+			vte->bell_cb(vte, vte->bell_data);
 		break;
 	case 0x08: /* BS */
 		/* Move cursor one position left */
@@ -1007,8 +1061,12 @@ static void do_param(struct tsm_vte *vte, uint32_t data)
 	int new;
 
 	if (data == ';') {
-		if (vte->csi_argc < CSI_ARG_MAX)
+		if (vte->csi_argc < CSI_ARG_MAX) {
+			// default parameter value is 0 if omitted
+			if (vte->csi_argv[vte->csi_argc] == -1)
+				vte->csi_argv[vte->csi_argc] = 0;
 			vte->csi_argc++;
+		}
 		return;
 	}
 
@@ -1248,6 +1306,12 @@ static void greyscale_rgb(int code, uint8_t *cr, uint8_t *cg, uint8_t *cb)
 static void lookup_color(struct tsm_vte *vte, int color, uint8_t *cr,
 			 uint8_t *cg, uint8_t *cb)
 {
+	/* OSC-4 / SGR color indices are untrusted; an out-of-range (or
+	 * unsigned-overflow-negative) index would wild-read palette[]/bval[]. */
+	if (color < 0 || color > 255) {
+		*cr = *cg = *cb = 0;
+		return;
+	}
 	if (color < 16) {
 		palette_rgb(vte, color, cr, cg, cb);
 	} else if (color < 232) {
@@ -1279,9 +1343,13 @@ static void csi_attribute(struct tsm_vte *vte)
 			vte->cattr.underline = 0;
 			vte->cattr.inverse = 0;
 			vte->cattr.blink = 0;
+			vte->cattr.dim = 0;
 			break;
 		case 1:
 			vte->cattr.bold = 1;
+			break;
+		case 2:
+			vte->cattr.dim = 1;
 			break;
 		case 3:
 			vte->cattr.italic = 1;
@@ -1297,6 +1365,7 @@ static void csi_attribute(struct tsm_vte *vte)
 			break;
 		case 22:
 			vte->cattr.bold = 0;
+			vte->cattr.dim = 0;
 			break;
 		case 23:
 			vte->cattr.italic = 0;
@@ -1416,6 +1485,10 @@ static void csi_attribute(struct tsm_vte *vte)
 			/* fallthrough */
 		case 48:
 			val = vte->csi_argv[i];
+			/* the 5/2 subcommand + its operands live in later argv slots;
+			 * bail if they would read past the parsed args (csi_argv[16] OOB). */
+			if (i + 1 >= vte->csi_argc)
+				break;
 			if (vte->csi_argv[i + 1] == 5) { // 256color mode
 				if (i + 2 >= vte->csi_argc ||
 					vte->csi_argv[i + 2] < 0) {
@@ -1630,6 +1703,7 @@ static void csi_mode(struct tsm_vte *vte, bool set)
 			set_reset_flag(vte, set, TSM_VTE_FLAG_AUTO_REPEAT_MODE);
 			continue;
 		case TSM_VTE_MOUSE_MODE_X10:
+		case TSM_VTE_MOUSE_MODE_VT200:
 			vte->mouse_mode = set ? vte->csi_argv[i] : 0;
 			vte->mouse_event = TSM_VTE_MOUSE_EVENT_BTN;
 
@@ -1722,7 +1796,7 @@ static void csi_mode(struct tsm_vte *vte, bool set)
 			continue;
 		case TSM_VTE_MOUSE_EVENT_BTN:
 		case TSM_VTE_MOUSE_EVENT_ANY:
-			if (vte->mouse_mode == TSM_VTE_MOUSE_MODE_X10) {
+			if (vte->mouse_mode == TSM_VTE_MOUSE_MODE_X10 || vte->mouse_mode == TSM_VTE_MOUSE_MODE_VT200) {
 			    vte->mouse_event = TSM_VTE_MOUSE_EVENT_BTN;
 			} else {
 			    vte->mouse_event = set ? vte->csi_argv[i] : 0;
@@ -1755,6 +1829,9 @@ static void csi_mode(struct tsm_vte *vte, bool set)
 			    vte->mouse_cb(vte, vte->mouse_event, set, vte->mouse_data);
 			    continue;
 			}
+			continue;
+		case TSM_VTE_BRACKETED_PASTE:
+			vte->bracketed_paste = set;
 			continue;
 		default:
 			llog_debug(vte, "unknown DEC %set-Mode %d",
@@ -1796,6 +1873,21 @@ static void csi_dsr(struct tsm_vte *vte)
 		else
 			vte_write(vte, buf, len);
 	}
+}
+
+static void csi_report_window_size(struct tsm_vte *vte)
+{
+	char buf[64];
+	unsigned int w, h, len, resp;
+
+	resp = vte->csi_argv[0] == 18 ? 8 : 9;
+
+	w = tsm_screen_get_width(vte->con);
+	h = tsm_screen_get_height(vte->con);
+	len = snprintf(buf, sizeof(buf), "\e[%u;%u;%ut", resp,  h, w);
+	if (len >= sizeof(buf))
+		return;
+	vte_write(vte, buf, len);
 }
 
 static void do_csi(struct tsm_vte *vte, uint32_t data)
@@ -1929,7 +2021,11 @@ static void do_csi(struct tsm_vte *vte, uint32_t data)
 		tsm_screen_erase_chars(vte->con, num);
 		break;
 	case 'm':
-		csi_attribute(vte);
+		/* CSI_GT ('>' prefix) marks a private/DEC sequence such as
+		 * XTMODKEYS \033[>4;1m — not an SGR attribute. Guard against
+		 * misinterpreting it as e.g. SGR 4 (underline). */
+		if (!(vte->csi_flags & CSI_GT))
+			csi_attribute(vte);
 		break;
 	case 'p':
 		if (vte->csi_flags & CSI_GT) {
@@ -2042,6 +2138,44 @@ static void do_csi(struct tsm_vte *vte, uint32_t data)
 			num = 1;
 		tsm_screen_scroll_down(vte->con, num);
 		break;
+	case 't': /* ST */
+		if (vte->csi_argv[0] == 18 || vte->csi_argv[0] == 19)
+			csi_report_window_size(vte);
+		else
+			llog_debug(vte, "unhandled CSI t sequence %d", vte->csi_argv[0]);
+		break;
+	case 'b': /* Repeat last char */
+		num = vte->csi_argv[0];
+		tsm_screen_repeat_char(vte->con, num);
+		break;
+	case 'q': /* DECLL - Load LEDs / DECSCUSR - Set Cursor Style */
+		if (vte->csi_flags & CSI_SPACE) {
+			num = vte->csi_argv[0];
+			if (num < 0)
+				num = 0;
+			tsm_screen_set_cursor_style(vte->con, num);
+		} else {
+			num = vte->csi_argv[0];
+			if (num <= 0) {
+				vte->led_state = 0;
+			} else if (num == 1) {
+				vte->led_state |= TSM_VTE_LED_SCROLL_LOCK;
+			} else if (num == 2) {
+				vte->led_state |= TSM_VTE_LED_NUM_LOCK;
+			} else if (num == 3) {
+				vte->led_state |= TSM_VTE_LED_CAPS_LOCK;
+			} else {
+				break;
+			}
+			if (vte->led_cb)
+				vte->led_cb(vte, vte->led_state, vte->led_data);
+		}
+		break;
+	case ']': /* Cursor blinking rate */
+		/* This behavior is similar to agetty */
+		if (vte->csi_argv[0] == 16 && vte->csi_argc >= 2)
+			tsm_screen_set_cursor_blinking_rate_ms(vte->con, vte->csi_argv[1]);
+		break;
 	default:
 		llog_debug(vte, "unhandled CSI sequence %c", data);
 	}
@@ -2088,7 +2222,7 @@ static void vte_write_xcolor(struct tsm_vte *vte, char *code,
 			     const char *end_seq,
 			     uint8_t r, uint8_t g, uint8_t b)
 {
-	char buf[32];
+	char buf[64];
 	snprintf(buf, sizeof(buf), "\e]%s;rgb:%02x%02x/%02x%02x/%02x%02x%s",
 		 code, r, r, g, g, b, b, end_seq);
 	vte_write(vte, buf, strlen(buf));
@@ -2651,6 +2785,62 @@ void tsm_vte_set_backspace_sends_delete(struct tsm_vte *vte, bool enable)
 	vte->backspace_sends_delete = enable;
 }
 
+/*
+Code     Modifiers
+---------+---------------------------
+   2     | Shift
+   3     | Alt
+   4     | Shift + Alt
+   5     | Control
+   6     | Shift + Control
+   7     | Alt + Control
+   8     | Shift + Alt + Control
+---------+---------------------------
+*/
+
+static char csi_modifier_from_mask(unsigned int mods)
+{
+	mods = mods & (TSM_CONTROL_MASK | TSM_SHIFT_MASK | TSM_ALT_MASK);
+	switch(mods) {
+		case TSM_SHIFT_MASK:
+			return '2';
+		case TSM_ALT_MASK:
+			return '3';
+		case TSM_SHIFT_MASK | TSM_ALT_MASK:
+			return '4';
+		case TSM_CONTROL_MASK:
+			return '5';
+		case TSM_CONTROL_MASK | TSM_SHIFT_MASK:
+			return '6';
+		case TSM_CONTROL_MASK | TSM_ALT_MASK:
+			return '7';
+		case TSM_CONTROL_MASK | TSM_ALT_MASK | TSM_SHIFT_MASK:
+			return '8';
+		default:
+			return 0;
+	}
+}
+
+static void vte_write_arrow(struct tsm_vte *vte, char direction, unsigned int mods)
+{
+	char code_with_modifier[6] = {'\e', '[', '1', ';', '0', 'A'};
+	char code[3] = {'\e', '[',  'A'};
+
+	vte->flags &= ~TSM_VTE_FLAG_PREPEND_ESCAPE;
+
+	int modifier = csi_modifier_from_mask(mods);
+	if (modifier) {
+		code_with_modifier[4] = modifier;
+		code_with_modifier[5] = direction;
+		vte_write(vte, code_with_modifier, 6);
+	} else {
+		if (vte->flags & TSM_VTE_FLAG_CURSOR_KEY_MODE)
+			code[1] = 'O';
+		code[2] = direction;
+		vte_write(vte, code, 3);
+	}
+}
+
 SHL_EXPORT
 bool tsm_vte_handle_keyboard(struct tsm_vte *vte, uint32_t keysym,
 			     uint32_t ascii, unsigned int mods,
@@ -2899,59 +3089,45 @@ bool tsm_vte_handle_keyboard(struct tsm_vte *vte, uint32_t keysym,
 			return true;
 		case XKB_KEY_Page_Up:
 		case XKB_KEY_KP_Page_Up:
-			vte_write(vte, "\e[5~", 4);
+			/* Combinations with ALT are handled as TSM_VTE_FLAG_PREPEND_ESCAPE flag */
+			if ((mods & (TSM_CONTROL_MASK | TSM_SHIFT_MASK)) == (TSM_CONTROL_MASK | TSM_SHIFT_MASK)) {
+				vte_write(vte, "\e[5;6~", 6);
+			} else if (mods & TSM_CONTROL_MASK) {
+				vte_write(vte, "\e[5;5~", 6);
+			} else if (mods & TSM_SHIFT_MASK) {
+				vte_write(vte, "\e[5;2~", 6);
+			} else {
+				vte_write(vte, "\e[5~", 4);
+			}
 			return true;
 		case XKB_KEY_KP_Page_Down:
 		case XKB_KEY_Page_Down:
-			vte_write(vte, "\e[6~", 4);
+			/* Combinations with ALT are handled as TSM_VTE_FLAG_PREPEND_ESCAPE flag */
+			if ((mods & (TSM_CONTROL_MASK | TSM_SHIFT_MASK)) == (TSM_CONTROL_MASK | TSM_SHIFT_MASK)) {
+				vte_write(vte, "\e[6;6~", 6);
+			} else if (mods & TSM_CONTROL_MASK) {
+				vte_write(vte, "\e[6;5~", 6);
+			} else if (mods & TSM_SHIFT_MASK) {
+				vte_write(vte, "\e[6;2~", 6);
+			} else {
+				vte_write(vte, "\e[6~", 4);
+			}
 			return true;
 		case XKB_KEY_Up:
 		case XKB_KEY_KP_Up:
-			if (mods & TSM_CONTROL_MASK) {
-				vte_write(vte, "\e[1;5A", 6);
-			} else if (mods & TSM_SHIFT_MASK) {
-				vte_write(vte, "\e[1;2A", 6);
-			} else if (vte->flags & TSM_VTE_FLAG_CURSOR_KEY_MODE) {
-				vte_write(vte, "\eOA", 3);
-			} else {
-				vte_write(vte, "\e[A", 3);
-			}
+			vte_write_arrow(vte, 'A', mods);
 			return true;
 		case XKB_KEY_Down:
 		case XKB_KEY_KP_Down:
-			if (mods & TSM_CONTROL_MASK) {
-				vte_write(vte, "\e[1;5B", 6);
-			} else if (mods & TSM_SHIFT_MASK) {
-				vte_write(vte, "\e[1;2B", 6);
-			} else if (vte->flags & TSM_VTE_FLAG_CURSOR_KEY_MODE) {
-				vte_write(vte, "\eOB", 3);
-			} else {
-				vte_write(vte, "\e[B", 3);
-			}
+			vte_write_arrow(vte, 'B', mods);
 			return true;
 		case XKB_KEY_Right:
 		case XKB_KEY_KP_Right:
-			if (mods & TSM_CONTROL_MASK) {
-				vte_write(vte, "\e[1;5C", 6);
-			} else if (mods & TSM_SHIFT_MASK) {
-				vte_write(vte, "\e[1;2C", 6);
-			} else if (vte->flags & TSM_VTE_FLAG_CURSOR_KEY_MODE) {
-				vte_write(vte, "\eOC", 3);
-			} else {
-				vte_write(vte, "\e[C", 3);
-			}
+			vte_write_arrow(vte, 'C', mods);
 			return true;
 		case XKB_KEY_Left:
 		case XKB_KEY_KP_Left:
-			if (mods & TSM_CONTROL_MASK) {
-				vte_write(vte, "\e[1;5D", 6);
-			} else if (mods & TSM_SHIFT_MASK) {
-				vte_write(vte, "\e[1;2D", 6);
-			} else if (vte->flags & TSM_VTE_FLAG_CURSOR_KEY_MODE) {
-				vte_write(vte, "\eOD", 3);
-			} else {
-				vte_write(vte, "\e[D", 3);
-			}
+			vte_write_arrow(vte, 'D', mods);
 			return true;
 		case XKB_KEY_KP_Insert:
 		case XKB_KEY_KP_0:
@@ -3246,8 +3422,20 @@ bool tsm_vte_handle_mouse(struct tsm_vte *vte, unsigned int cell_x,
 	bool pressed = event & TSM_MOUSE_EVENT_PRESSED;
 
 	/* drop move event if we don't wait for move events */
-	if ((vte->mouse_mode == TSM_VTE_MOUSE_MODE_X10 || vte->mouse_event != TSM_VTE_MOUSE_EVENT_ANY) && (event & TSM_MOUSE_EVENT_MOVED)) {
+	/* In mode 1002 (BTN), accept MOVED with button pressed (drag, button >= 32) */
+	/* In mode 1003 (ANY), accept all MOVED events */
+	bool is_drag = (button >= 32 && button <= 34);
+	if ((vte->mouse_mode == TSM_VTE_MOUSE_MODE_X10 || vte->mouse_mode == TSM_VTE_MOUSE_MODE_VT200 ||
+	     (vte->mouse_event == TSM_VTE_MOUSE_EVENT_BTN && !is_drag) ||
+	     (vte->mouse_event != TSM_VTE_MOUSE_EVENT_BTN && vte->mouse_event != TSM_VTE_MOUSE_EVENT_ANY)) &&
+	    (event & TSM_MOUSE_EVENT_MOVED)) {
 		return false;
+	}
+
+	if (button == TSM_MOUSE_BUTTON_WHEEL_UP) {
+		button = 64;
+	} else if (button == TSM_MOUSE_BUTTON_WHEEL_DOWN) {
+		button = 65;
 	}
 
 	if (vte->mouse_mode == TSM_VTE_MOUSE_MODE_SGR || vte->mouse_mode == TSM_VTE_MOUSE_MODE_PIXEL) {
@@ -3256,16 +3444,13 @@ bool tsm_vte_handle_mouse(struct tsm_vte *vte, unsigned int cell_x,
 		cell_x++;
 		cell_y++;
 
-		if (button == TSM_MOUSE_BUTTON_WHEEL_UP) {
-			button = 64;
-		} else if (button == TSM_MOUSE_BUTTON_WHEEL_DOWN) {
-			button = 65;
-		}
-
 		reply_flags = button | modifiers;
 	}
 
-	if (vte->mouse_mode == TSM_VTE_MOUSE_MODE_X10) {
+	if (vte->mouse_mode == TSM_VTE_MOUSE_MODE_X10 || vte->mouse_mode == TSM_VTE_MOUSE_MODE_VT200) {
+		if (vte->mouse_mode == TSM_VTE_MOUSE_MODE_X10 && (event & TSM_MOUSE_EVENT_RELEASED))
+			return false;
+
 		/* + 0x20 to start in the range of visible characters
 		 * and + 1 to start at 1,1 */
 		cell_x += 0x21;
@@ -3285,18 +3470,26 @@ bool tsm_vte_handle_mouse(struct tsm_vte *vte, unsigned int cell_x,
 			button = 3;
 		}
 
+		if (vte->mouse_mode == TSM_VTE_MOUSE_MODE_X10)
+			modifiers = 0;
+
 		reply_flags = (button | modifiers) + 0x20;
 		snprintf((char*) &buffer, sizeof(buffer), "\e[M%c%c%c", reply_flags, cell_x, cell_y);
 
 		vte_write(vte, buffer, strlen(buffer));
 		return true;
-	} else if (vte->mouse_mode == TSM_VTE_MOUSE_MODE_SGR && vte->mouse_event) {
+	} else if (vte->mouse_mode == TSM_VTE_MOUSE_MODE_SGR) {
 		if (event & TSM_MOUSE_EVENT_MOVED) {
 			if (cell_x == vte->mouse_last_col && cell_y == vte->mouse_last_row) {
 				return false;
 			}
 
-			reply_flags = 35;
+			/* For drags (button >= 32), use actual button value from reply_flags.
+			 * For hover motion (button < 32, only in mode ANY), use 35 (move marker). */
+			if (button < 32) {
+				reply_flags = 35;
+			}
+			/* else: reply_flags already set to button | modifiers for drags */
 			pressed = true;
 
 			vte->mouse_last_col = cell_x;
@@ -3307,9 +3500,14 @@ bool tsm_vte_handle_mouse(struct tsm_vte *vte, unsigned int cell_x,
 
 		vte_write(vte, buffer, strlen(buffer));
 		return true;
-	} else if (vte->mouse_mode == TSM_VTE_MOUSE_MODE_PIXEL && vte->mouse_event) {
+	} else if (vte->mouse_mode == TSM_VTE_MOUSE_MODE_PIXEL) {
 		if (event == TSM_MOUSE_EVENT_MOVED) {
-			reply_flags = 35;
+			/* For drags (button >= 32), use actual button value from reply_flags.
+			 * For hover motion (button < 32, only in mode ANY), use 35 (move marker). */
+			if (button < 32) {
+				reply_flags = 35;
+			}
+			/* else: reply_flags already set to button | modifiers for drags */
 			pressed = true;
 		}
 
@@ -3320,4 +3518,26 @@ bool tsm_vte_handle_mouse(struct tsm_vte *vte, unsigned int cell_x,
 	}
 
 	return false;
+}
+
+void tsm_vte_paste(struct tsm_vte *vte, const char *data)
+{
+	if (!vte || !data)
+		return;
+
+	if (vte->bracketed_paste) {
+		const char start[] = "\e[200~";
+		const char end[] = "\e[201~";
+		char *buf;
+		int len;
+
+		len = strlen(data) + sizeof(start) + sizeof(end) + 1;
+		buf = malloc(len);
+		if (!buf)
+			return;
+		snprintf(buf, len, "%s%s%s", start, data, end);
+		vte_write(vte, buf, strlen(buf));
+		free(buf);
+	} else
+		vte_write(vte, data, strlen(data));
 }

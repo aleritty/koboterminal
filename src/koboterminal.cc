@@ -3,11 +3,15 @@
 #include <unistd.h>
 
 #include <QDialog>
+#include <QDir>
+#include <QFile>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QPointer>
 #include <QPushButton>
+#include <QRegularExpression>
+#include <QSaveFile>
 #include <QScreen>
 #include <QSocketNotifier>
 #include <QString>
@@ -18,6 +22,7 @@
 #include "term.h"
 
 #define KT_FIFO "/tmp/koboterminal.fifo"
+#define KT_MENU "/mnt/onboard/.adds/nm/koboterminal"
 
 // Nickel types we only use through their Qt base classes.
 typedef QDialog ConfirmationDialog;
@@ -187,11 +192,46 @@ static int kt_init() {
     return 0;
 }
 
+// Every file this mod (or an earlier experimental build) can leave behind.
+// Keep in sync with the "Footprint" list in PLAN.md and the manual steps in
+// README.md. NickelHook itself deletes the library and the uninstall flag.
+static bool kt_rm(QString const& p) {
+    QByteArray b = QFile::encodeName(p);
+    return access(b.constData(), F_OK) || nh_delete_file(b.constData()); // nh_delete_* fails on missing paths
+}
+
+static bool kt_uninstall() {
+    bool ok = kt_rm(QStringLiteral(KT_MENU)) & kt_rm(QStringLiteral(KT_FIFO)) & kt_rm(QStringLiteral(KT_HISTFILE));
+    QDir kobo(QStringLiteral("/mnt/onboard/.kobo")); // nh_dump_log() output from failed inits
+    for (QString const& f : kobo.entryList(QStringList(QStringLiteral("KoboTerminal_*.log")), QDir::Files))
+        ok &= kt_rm(kobo.filePath(f));
+
+    // Earlier builds kept files in .adds/koboterminal and a marker block in the NickelMenu config.
+    QDir legacy(QStringLiteral("/mnt/onboard/.adds/koboterminal"));
+    if (legacy.exists()) {
+        for (QString const& f : legacy.entryList(QDir::Files | QDir::Hidden))
+            ok &= kt_rm(legacy.filePath(f));
+        ok &= access(QFile::encodeName(legacy.path()).constData(), F_OK) || nh_delete_dir(QFile::encodeName(legacy.path()).constData());
+    }
+    QFile menu(QStringLiteral("/mnt/onboard/.adds/nm/menu"));
+    if (menu.open(QIODevice::ReadOnly)) {
+        QString cfg = QString::fromUtf8(menu.readAll());
+        menu.close();
+        QRegularExpression block(QStringLiteral("# BEGIN KOBOTERMINAL.*?# END KOBOTERMINAL\\n?"), QRegularExpression::DotMatchesEverythingOption);
+        if (cfg.contains(block)) {
+            QSaveFile out(menu.fileName());
+            ok &= out.open(QIODevice::WriteOnly) && out.write(cfg.remove(block).toUtf8()) >= 0 && out.commit();
+        }
+    }
+    nh_log("uninstall cleanup %s", ok ? "done" : "incomplete");
+    return ok;
+}
+
 static struct nh_info KoboTerminal = {
     .name            = "KoboTerminal",
     .desc            = "Terminal dialog opened from NickelMenu",
     .uninstall_flag  = "/mnt/onboard/koboterminal_uninstall",
-    .uninstall_xflag = "/mnt/onboard/.adds/nm/koboterminal",
+    .uninstall_xflag = KT_MENU,
 };
 
 static struct nh_hook KoboTerminalHook[] = {
@@ -219,4 +259,5 @@ NickelHook(
     .info  = &KoboTerminal,
     .hook  = KoboTerminalHook,
     .dlsym = KoboTerminalDlsym,
+    .uninstall = kt_uninstall,
 )

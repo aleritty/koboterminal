@@ -64,6 +64,8 @@
 #include "libtsm.h"
 #include "libtsm-int.h"
 #include "shl-llog.h"
+#include "shl-macro.h"
+#include "shl_dlist.h"
 
 #define LLOG_SUBSYSTEM "tsm-screen"
 
@@ -110,7 +112,7 @@ static void move_cursor(struct tsm_screen *con, unsigned int x, unsigned int y)
 	c->age = con->age_cnt;
 }
 
-void screen_cell_init_generic(struct tsm_screen *con, struct cell *cell, struct tsm_screen_attr *attr)
+static void screen_cell_init_generic(struct tsm_screen *con, struct cell *cell, struct tsm_screen_attr *attr)
 {
 	cell->ch = 0;
 	cell->width = 1;
@@ -136,8 +138,9 @@ static int line_new(struct tsm_screen *con, struct line **out,
 	line = malloc(sizeof(*line));
 	if (!line)
 		return -ENOMEM;
-	line->next = NULL;
-	line->prev = NULL;
+	line->list.next = NULL;
+	line->list.prev = NULL;
+	line->sb_id = 0;
 	line->size = width;
 	line->age = con->age_cnt;
 
@@ -184,6 +187,18 @@ static int line_resize(struct tsm_screen *con, struct line *line,
 	return 0;
 }
 
+static void clear_selection_on_line(struct tsm_screen *con, struct line *line)
+{
+	if (!con->sel_active)
+		return;
+	if (con->sel_begin.line == line)
+		con->sel_begin.line = NULL;
+	if (con->sel_start.line == line)
+		con->sel_start.line = NULL;
+	if (con->sel_end.line == line)
+		con->sel_end.line = NULL;
+}
+
 /* This links the given line into the scrollback-buffer */
 static void link_to_scrollback(struct tsm_screen *con, struct line *line)
 {
@@ -192,81 +207,74 @@ static void link_to_scrollback(struct tsm_screen *con, struct line *line)
 	/* TODO: more sophisticated ageing */
 	con->age = con->age_cnt;
 
-	if (con->sb_max == 0) {
-		if (con->sel_active) {
-			if (con->sel_start.line == line) {
-				con->sel_start.line = NULL;
-				con->sel_start.y = SELECTION_TOP;
-			}
-			if (con->sel_end.line == line) {
-				con->sel_end.line = NULL;
-				con->sel_end.y = SELECTION_TOP;
-			}
-		}
+	if (con->sb.max == 0) {
+		clear_selection_on_line(con, line);
 		line_free(line);
 		return;
 	}
 
 	/* Remove a line from the scrollback buffer if it reaches its maximum.
 	 * We must take care to correctly keep the current position as the new
-	 * line is linked in after we remove the top-most line here.
-	 * sb_max == 0 is tested earlier so we can assume sb_max > 0 here. In
-	 * other words, buf->sb_first is a valid line if sb_count >= sb_max. */
-	if (con->sb_count >= con->sb_max) {
-		tmp = con->sb_first;
-		con->sb_first = tmp->next;
-		if (tmp->next)
-			tmp->next->prev = NULL;
-		else
-			con->sb_last = NULL;
-		--con->sb_count;
+	 * line is linked in after we remove the top-most line here. */
+	if (con->sb.count >= con->sb.max) {
+		tmp = shl_dlist_first(&con->sb.list, struct line, list);
+		shl_dlist_unlink(&tmp->list);
+		--con->sb.count;
 
-		/* (position == tmp && !next) means we have sb_max=1 so set
-		 * position to the new line. Otherwise, set to new first line.
-		 * If position!=tmp and we have a fixed-position then nothing
-		 * needs to be done because we can stay at the same line. If we
-		 * have no fixed-position, we need to set the position to the
-		 * next inserted line, which can be "line", too. */
-		if (con->sb_pos) {
-			if (con->sb_pos == tmp ||
-			    !(con->flags & TSM_SCREEN_FIXED_POS)) {
-				if (con->sb_pos->next) {
-					con->sb_pos = con->sb_pos->next;
-					++con->sb_pos_num;
-				} else {
-					con->sb_pos = line;
-					con->sb_pos_num = 0;
-				}
-			}
+		/* Only consider sb.max > 1, so there is always another line in sb. */
+		if (con->sb.pos == tmp) {
+			con->sb.pos = shl_dlist_first(&con->sb.list, struct line, list);
+			con->sb.pos_num = 0;
+		} else {
+			con->sb.pos_num--;
 		}
-
-		if (con->sel_active) {
-			if (con->sel_start.line == tmp) {
-				con->sel_start.line = NULL;
-				con->sel_start.y = SELECTION_TOP;
-			}
-			if (con->sel_end.line == tmp) {
-				con->sel_end.line = NULL;
-				con->sel_end.y = SELECTION_TOP;
-			}
-		}
+		clear_selection_on_line(con, tmp);
 		line_free(tmp);
 	}
 
-	line->sb_id = ++con->sb_last_id;
-	line->next = NULL;
-	line->prev = con->sb_last;
-	if (con->sb_last) {
-		con->sb_last->next = line;
-	} else {
-		con->sb_first = line;
-	}
-	con->sb_last = line;
-	++con->sb_count;
+	line->sb_id = ++con->sb.last_id;
+	shl_dlist_link_tail(&con->sb.list, &line->list);
+	++con->sb.count;
+	if (con->sb.pos == NULL)
+		con->sb.pos_num = con->sb.count;
+}
 
-	if (con->sb_pos == NULL) {
-		con->sb_pos_num = con->sb_count;
+/* Remove num lines from scroll back to current buffer */
+static void remove_from_sb(struct tsm_screen *con, unsigned int num)
+{
+	struct line *tmp;
+
+	/* TODO: more sophisticated ageing */
+	con->age = con->age_cnt;
+
+	if (!con->sb.max || !con->sb.count || shl_dlist_empty(&con->sb.list))
+		return;
+
+	if (num > con->sb.count)
+		num = con->sb.count;
+
+	while (num--) {
+		tmp = shl_dlist_last(&con->sb.list, struct line, list);
+
+		if (tmp->size < con->size_x)
+			if (line_resize(con, tmp, con->size_x) < 0)
+				goto end_sbpos;
+		shl_dlist_unlink(&tmp->list);
+		--con->sb.count;
+
+		if (con->sb.pos == tmp) {
+			con->sb.pos_num = con->sb.count;
+			con->sb.pos = NULL;
+		}
+		clear_selection_on_line(con, con->lines[num]);
+		line_free(con->lines[num]);
+		tmp->sb_id = 0;
+		con->lines[num] = tmp;
+		con->lines[num]->age = con->age_cnt;
 	}
+end_sbpos:
+	if (!con->sb.pos)
+		con->sb.pos_num = con->sb.count;
 }
 
 static void screen_scroll_up(struct tsm_screen *con, unsigned int num)
@@ -319,27 +327,6 @@ static void screen_scroll_up(struct tsm_screen *con, unsigned int num)
 
 	memcpy(&con->lines[con->margin_top + (max - num)],
 	       cache, num * sizeof(struct line*));
-
-	if (con->sel_active) {
-		if (!con->sel_start.line && con->sel_start.y >= 0) {
-			con->sel_start.y -= num;
-			if (con->sel_start.y < 0) {
-				con->sel_start.line = con->sb_last;
-				while (con->sel_start.line && ++con->sel_start.y < 0)
-					con->sel_start.line = con->sel_start.line->prev;
-				con->sel_start.y = SELECTION_TOP;
-			}
-		}
-		if (!con->sel_end.line && con->sel_end.y >= 0) {
-			con->sel_end.y -= num;
-			if (con->sel_end.y < 0) {
-				con->sel_end.line = con->sb_last;
-				while (con->sel_end.line && ++con->sel_end.y < 0)
-					con->sel_end.line = con->sel_end.line->prev;
-				con->sel_end.y = SELECTION_TOP;
-			}
-		}
-	}
 }
 
 static void screen_scroll_down(struct tsm_screen *con, unsigned int num)
@@ -377,13 +364,6 @@ static void screen_scroll_down(struct tsm_screen *con, unsigned int num)
 
 	memcpy(&con->lines[con->margin_top],
 	       cache, num * sizeof(struct line*));
-
-	if (con->sel_active) {
-		if (!con->sel_start.line && con->sel_start.y >= 0)
-			con->sel_start.y += num;
-		if (!con->sel_end.line && con->sel_end.y >= 0)
-			con->sel_end.y += num;
-	}
 }
 
 static void screen_write(struct tsm_screen *con, unsigned int x,
@@ -418,6 +398,7 @@ static void screen_write(struct tsm_screen *con, unsigned int x,
 	for (i = 1; i < len && i + x < con->size_x; ++i) {
 		line->cells[x + i].age = con->age_cnt;
 		line->cells[x + i].width = 0;
+		line->cells[x + i].ch = 0;
 	}
 }
 
@@ -473,6 +454,12 @@ static inline unsigned int to_abs_y(struct tsm_screen *con, unsigned int y)
 	return con->margin_top + y;
 }
 
+static void reset_scrollback_position(struct tsm_screen *con)
+{
+	con->sb.pos = NULL;
+	con->sb.pos_num = con->sb.count;
+}
+
 SHL_EXPORT
 int tsm_screen_new(struct tsm_screen **out, tsm_log_t log, void *log_data)
 {
@@ -496,6 +483,8 @@ int tsm_screen_new(struct tsm_screen **out, tsm_log_t log, void *log_data)
 	con->def_attr.fr = 255;
 	con->def_attr.fg = 255;
 	con->def_attr.fb = 255;
+	con->blinking_rate_ms = 500;
+	shl_dlist_init(&con->sb.list);
 
 	ret = tsm_symbol_table_new(&con->sym_table);
 	if (ret)
@@ -541,17 +530,17 @@ void tsm_screen_unref(struct tsm_screen *con)
 		return;
 
 	llog_debug(con, "destroying screen");
+	tsm_screen_clear_sb(con);
 
 	for (i = 0; i < con->line_num; ++i) {
 		line_free(con->main_lines[i]);
 		line_free(con->alt_lines[i]);
 	}
-
 	free(con->main_lines);
 	free(con->alt_lines);
 	free(con->tab_ruler);
 	tsm_symbol_table_unref(con->sym_table);
-	tsm_screen_clear_sb(con);
+	free(con->cells);
 	free(con);
 }
 
@@ -602,7 +591,7 @@ int tsm_screen_resize(struct tsm_screen *con, unsigned int x,
 		      unsigned int y)
 {
 	struct line **cache;
-	unsigned int i, j, width, diff, start;
+	unsigned int i, width, diff;
 	int ret;
 	bool *tab_ruler;
 
@@ -682,29 +671,6 @@ int tsm_screen_resize(struct tsm_screen *con, unsigned int x,
 
 	screen_inc_age(con);
 
-	/* clear expansion/padding area */
-	start = x;
-	if (x > con->size_x)
-		start = con->size_x;
-	for (j = 0; j < con->line_num; ++j) {
-		/* main-lines may go into SB, so clear all cells */
-		i = 0;
-		if (j < con->size_y)
-			i = start;
-
-		for ( ; i < con->main_lines[j]->size; ++i)
-			screen_cell_init_generic(con, &con->main_lines[j]->cells[i],
-				&con->def_attr_main);
-
-		/* alt-lines never go into SB, only clear visible cells */
-		i = 0;
-		if (j < con->size_y)
-			i = con->size_x;
-
-		for ( ; i < x; ++i)
-			screen_cell_init(con, &con->alt_lines[j]->cells[i]);
-	}
-
 	/* xterm destroys margins on resize, so do we */
 	con->margin_top = 0;
 	con->margin_bottom = con->size_y - 1;
@@ -730,11 +696,36 @@ int tsm_screen_resize(struct tsm_screen *con, unsigned int x,
 	/* scroll buffer if screen height shrinks */
 	if (y < con->size_y) {
 		diff = con->size_y - y;
-		screen_scroll_up(con, diff);
-		if (con->cursor_y > diff)
-			move_cursor(con, con->cursor_x, con->cursor_y - diff);
-		else
-			move_cursor(con, con->cursor_x, 0);
+		if (shl_dlist_empty(&con->sb.list) || (con->flags & TSM_SCREEN_ALTERNATE)) {
+			/* If there is nothing in the scrollback buffer,
+			 * Only scroll up if the cursor would go off-screen */
+			if (con->cursor_y >= y) {
+				diff = con->cursor_y - y + 1;
+				tsm_screen_scroll_up(con, diff);
+				move_cursor(con, con->cursor_x, y - 1);
+			}
+		} else {
+			tsm_screen_scroll_up(con, diff);
+			if (con->cursor_y > diff)
+				move_cursor(con, con->cursor_x, con->cursor_y - diff);
+			else
+			 	move_cursor(con, con->cursor_x, 0);
+		}
+	} else if (y > con->size_y) {
+		diff = y - con->size_y;
+		if (diff > con->sb.count)
+			diff = con->sb.count;
+		/*
+		 * When increasing the terminal number of rows, we can move some
+		 * lines from the scrollback buffer to the main buffer.
+		 */
+		if (diff && !(con->flags & TSM_SCREEN_ALTERNATE)) {
+			con->size_y = y;
+			con->margin_bottom = con->size_y - 1;
+			tsm_screen_scroll_down(con, diff);
+			remove_from_sb(con, diff);
+			move_cursor(con, con->cursor_x, con->cursor_y + diff);
+		}
 	}
 
 	con->size_y = y;
@@ -773,7 +764,7 @@ int tsm_screen_set_margins(struct tsm_screen *con,
 	return 0;
 }
 
-/* set maximum scrollback buffer size */
+/* set maximum scrollback buffer size in number of lines*/
 SHL_EXPORT
 void tsm_screen_set_max_sb(struct tsm_screen *con,
 			       unsigned int max)
@@ -783,45 +774,37 @@ void tsm_screen_set_max_sb(struct tsm_screen *con,
 	if (!con)
 		return;
 
+	// Don't allow only one line in the scrollback buffer, this simplifies
+	// the code, and is not a useful usecase.
+	if (max == 1)
+		max = 2;
+
 	screen_inc_age(con);
 	/* TODO: more sophisticated ageing */
 	con->age = con->age_cnt;
 
-	while (con->sb_count > max) {
-		line = con->sb_first;
-		con->sb_first = line->next;
-		if (line->next)
-			line->next->prev = NULL;
-		else
-			con->sb_last = NULL;
-		con->sb_count--;
+	while (con->sb.count > max) {
+		line = shl_dlist_first(&con->sb.list, struct line, list);
+		shl_dlist_unlink(&line->list);
+		--con->sb.count;
 
 		/* We treat fixed/unfixed position the same here because we
 		 * remove lines from the TOP of the scrollback buffer. */
-		if (con->sb_pos == line)
-			con->sb_pos = con->sb_first;
+		if (con->sb.pos == line)
+			con->sb.pos = shl_dlist_first(&con->sb.list, struct line, list);
 
-		if (con->sel_active) {
-			if (con->sel_start.line == line) {
-				con->sel_start.line = NULL;
-				con->sel_start.y = SELECTION_TOP;
-			}
-			if (con->sel_end.line == line) {
-				con->sel_end.line = NULL;
-				con->sel_end.y = SELECTION_TOP;
-			}
-		}
+		clear_selection_on_line(con, line);
 		line_free(line);
 	}
-
-	con->sb_max = max;
+	con->sb.max = max;
 }
 
 /* clear scrollback buffer */
 SHL_EXPORT
 void tsm_screen_clear_sb(struct tsm_screen *con)
 {
-	struct line *iter, *tmp;
+	struct shl_dlist *iter, *safe;
+	struct line *tmp;
 
 	if (!con)
 		return;
@@ -830,33 +813,29 @@ void tsm_screen_clear_sb(struct tsm_screen *con)
 	/* TODO: more sophisticated ageing */
 	con->age = con->age_cnt;
 
-	for (iter = con->sb_first; iter; ) {
-		tmp = iter;
-		iter = iter->next;
+	if (con->sel_active) {
+		if (con->sel_begin.line && is_in_scrollback(&con->sel_begin))
+			con->sel_begin.line = NULL;
+		if (con->sel_start.line && is_in_scrollback(&con->sel_start))
+			con->sel_start.line = NULL;
+		if (con->sel_end.line && is_in_scrollback(&con->sel_end))
+			con->sel_end.line = NULL;
+	}
+	shl_dlist_for_each_safe(iter, safe, &con->sb.list) {
+		tmp = shl_dlist_entry(iter, struct line, list);
+		shl_dlist_unlink(&tmp->list);
 		line_free(tmp);
 	}
-
-	con->sb_first = NULL;
-	con->sb_last = NULL;
-	con->sb_count = 0;
-	con->sb_pos = NULL;
-	con->sb_pos_num = 0;
-
-	if (con->sel_active) {
-		if (con->sel_start.line) {
-			con->sel_start.line = NULL;
-			con->sel_start.y = SELECTION_TOP;
-		}
-		if (con->sel_end.line) {
-			con->sel_end.line = NULL;
-			con->sel_end.y = SELECTION_TOP;
-		}
-	}
+	con->sb.count = 0;
+	con->sb.pos = NULL;
+	con->sb.pos_num = 0;
 }
 
 SHL_EXPORT
 void tsm_screen_sb_up(struct tsm_screen *con, unsigned int num)
 {
+	struct line *prev;
+
 	if (!con || !num)
 		return;
 
@@ -864,18 +843,25 @@ void tsm_screen_sb_up(struct tsm_screen *con, unsigned int num)
 	/* TODO: more sophisticated ageing */
 	con->age = con->age_cnt;
 
+	if (shl_dlist_empty(&con->sb.list))
+		return;
+
 	while (num--) {
-		if (con->sb_pos) {
-			if (!con->sb_pos->prev)
+		if (con->sb.pos) {
+			if (con->sb.pos_num == 0)
 				return;
 
-			con->sb_pos = con->sb_pos->prev;
-			--con->sb_pos_num;
-		} else if (!con->sb_last) {
-			return;
+			prev = shl_dlist_prev(con->sb.pos, &con->sb.list, list);
+			if (!prev) {
+				llog_error(con, "prev is NULL, con->sb.pos_num: %d con->sb.count: %d",
+					   con->sb.pos_num, con->sb.count);
+				return;
+			}
+			--con->sb.pos_num;
+			con->sb.pos = prev;
 		} else {
-			con->sb_pos = con->sb_last;
-			con->sb_pos_num = con->sb_count - 1;
+			con->sb.pos = shl_dlist_last(&con->sb.list, struct line, list);
+			con->sb.pos_num = con->sb.count - 1;
 		}
 	}
 }
@@ -890,14 +876,12 @@ void tsm_screen_sb_down(struct tsm_screen *con, unsigned int num)
 	/* TODO: more sophisticated ageing */
 	con->age = con->age_cnt;
 
-	while (num--) {
-		if (con->sb_pos) {
-			con->sb_pos = con->sb_pos->next;
-			++con->sb_pos_num;
-		}
-		else
-			return;
+	while (num-- && con->sb.pos && con->sb.pos_num < con->sb.count) {
+			con->sb.pos = shl_dlist_next(con->sb.pos, &con->sb.list, list);
+			++con->sb.pos_num;
 	}
+	if (con->sb.pos_num == con->sb.count)
+		con->sb.pos = NULL;
 }
 
 SHL_EXPORT
@@ -923,15 +907,15 @@ void tsm_screen_sb_page_down(struct tsm_screen *con, unsigned int num)
 SHL_EXPORT
 void tsm_screen_sb_reset(struct tsm_screen *con)
 {
-	if (!con || !con->sb_pos)
+	if (!con || !con->sb.pos)
 		return;
 
 	screen_inc_age(con);
 	/* TODO: more sophisticated ageing */
 	con->age = con->age_cnt;
 
-	con->sb_pos = NULL;
-	con->sb_pos_num = 0;
+	con->sb.pos = NULL;
+	con->sb.pos_num = con->sb.count;
 }
 
 unsigned int tsm_screen_sb_get_line_count(struct tsm_screen *con)
@@ -940,7 +924,7 @@ unsigned int tsm_screen_sb_get_line_count(struct tsm_screen *con)
 		return 0;
 	}
 
-	return con->sb_count;
+	return con->sb.count;
 }
 
 unsigned int tsm_screen_sb_get_line_pos(struct tsm_screen *con)
@@ -949,7 +933,7 @@ unsigned int tsm_screen_sb_get_line_pos(struct tsm_screen *con)
 		return 0;
 	}
 
-	return con->sb_pos_num;
+	return con->sb.pos_num;
 }
 
 SHL_EXPORT
@@ -959,6 +943,8 @@ void tsm_screen_set_def_attr(struct tsm_screen *con,
 	if (!con || !attr)
 		return;
 	memcpy(&con->def_attr, attr, sizeof(*attr));
+	if (!(con->flags & TSM_SCREEN_ALTERNATE))
+		memcpy(&con->def_attr_main, attr, sizeof(*attr));
 }
 
 SHL_EXPORT
@@ -983,6 +969,8 @@ void tsm_screen_reset(struct tsm_screen *con)
 		else
 			con->tab_ruler[i] = false;
 	}
+	tsm_screen_selection_reset(con);
+	reset_scrollback_position(con);
 }
 
 SHL_EXPORT
@@ -1002,6 +990,8 @@ void tsm_screen_set_flags(struct tsm_screen *con, unsigned int flags)
 	if (!(old & TSM_SCREEN_ALTERNATE) && (flags & TSM_SCREEN_ALTERNATE)) {
 		con->age = con->age_cnt;
 		con->lines = con->alt_lines;
+		tsm_screen_selection_reset(con);
+		reset_scrollback_position(con);
 
 		/* save attributes of main screen when we switch to alt screen */
 		memcpy(&con->def_attr_main, &con->def_attr, sizeof(con->def_attr));
@@ -1034,6 +1024,8 @@ void tsm_screen_reset_flags(struct tsm_screen *con, unsigned int flags)
 	if ((old & TSM_SCREEN_ALTERNATE) && (flags & TSM_SCREEN_ALTERNATE)) {
 		con->age = con->age_cnt;
 		con->lines = con->main_lines;
+		tsm_screen_selection_reset(con);
+		reset_scrollback_position(con);
 	}
 
 	if ((old & TSM_SCREEN_HIDE_CURSOR) &&
@@ -1358,6 +1350,11 @@ void tsm_screen_tab_left(struct tsm_screen *con, unsigned int num)
 	screen_inc_age(con);
 
 	x = con->cursor_x;
+
+	/* cursor_x may exceed size_x (e.g. CHT then a wide glyph at the last
+	 * column); clamp before indexing tab_ruler[0..size_x-1]. */
+	if (x > con->size_x)
+		x = con->size_x;
 	for (i = 0; i < num; ++i) {
 		for (j = x - 1; j > 0; --j) {
 			if (con->tab_ruler[j])
@@ -1485,6 +1482,36 @@ void tsm_screen_insert_chars(struct tsm_screen *con, unsigned int num)
 
 	for (i = 0; i < num; ++i)
 		screen_cell_init(con, &cells[con->cursor_x + i]);
+}
+
+void tsm_screen_repeat_char(struct tsm_screen *con, unsigned int num)
+{
+	struct cell *cells;
+	unsigned int max, i;
+
+	if (!con || !num || !con->size_y || !con->size_x)
+		return;
+
+	screen_inc_age(con);
+	/* TODO: more sophisticated ageing */
+	con->age = con->age_cnt;
+
+	if (con->cursor_x >= con->size_x)
+		con->cursor_x = con->size_x - 1;
+	if (con->cursor_y >= con->size_y)
+		con->cursor_y = con->size_y - 1;
+
+	if (!con->cursor_x)
+		return;
+
+	max = con->size_x - con->cursor_x;
+	if (num > max)
+		num = max;
+
+	cells = con->lines[con->cursor_y]->cells;
+	for (i = 0; i < num; i++)
+		cells[con->cursor_x + i] = cells[con->cursor_x - 1];
+	con->cursor_x += num;
 }
 
 SHL_EXPORT
@@ -1645,4 +1672,45 @@ void tsm_screen_erase_screen(struct tsm_screen *con, bool protect)
 
 	screen_erase_region(con, 0, 0, con->size_x - 1, con->size_y - 1,
 			     protect);
+}
+
+SHL_EXPORT
+enum tsm_screen_cursor_style tsm_screen_get_cursor_style(struct tsm_screen *con)
+{
+	if (!con)
+		return 0;
+
+	return con->cstyle;
+}
+
+SHL_EXPORT
+void tsm_screen_set_cursor_style(struct tsm_screen *con, enum tsm_screen_cursor_style type)
+{
+	if (!con)
+		return;
+
+	con->cstyle = type;
+}
+
+SHL_EXPORT
+uint32_t tsm_screen_get_cursor_blinking_rate_ms(struct tsm_screen *con)
+{
+	if (!con)
+		return 0;
+
+	return con->blinking_rate_ms;
+}
+
+SHL_EXPORT
+void tsm_screen_set_cursor_blinking_rate_ms(struct tsm_screen *con, uint32_t ms)
+{
+	if (!con)
+		return;
+
+	if (ms < 50)
+		ms = 50;
+	if (ms > 5000)
+		ms = 5000;
+
+	con->blinking_rate_ms = ms;
 }

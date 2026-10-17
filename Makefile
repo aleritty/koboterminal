@@ -12,4 +12,17 @@ override CXXFLAGS += -Wall -Wextra -Werror -Wno-missing-field-initializers -fvis
 override LDFLAGS  += -lutil
 override KOBOROOT += res/koboterminal:/mnt/onboard/.adds/nm/koboterminal
 
+override SKIPCONFIGURE += strip koboroot-uninstall
+strip:
+	$(STRIP) --strip-unneeded $(LIBRARY)
+
+# Ships the library too, so the cleanup runs even if the installed one is missing or broken.
+override GENERATED += KoboRoot-uninstall.tgz
+koboroot-uninstall:
+	tar czf KoboRoot-uninstall.tgz --owner=root --group=root --mode="u=rwX,go=rX" \
+		--transform="s,^$(LIBRARY),./usr/local/Kobo/imageformats/$(notdir $(LIBRARY))," \
+		--transform="s,^res/koboterminal_uninstall,./mnt/onboard/koboterminal_uninstall," \
+		$(LIBRARY) res/koboterminal_uninstall
+.PHONY: strip koboroot-uninstall
+
 include NickelHook/NickelHook.mk

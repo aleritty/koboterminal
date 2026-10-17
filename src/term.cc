@@ -105,9 +105,10 @@ bool KtTerm::start() {
     // async-signal-safe calls, so build argv/envp here.
     QList<QByteArray> env;
     for (char **e = environ; *e; e++)
-        if (strncmp(*e, "TERM=", 5) && strncmp(*e, "PS1=", 4))
+        if (strncmp(*e, "TERM=", 5) && strncmp(*e, "PS1=", 4) && strncmp(*e, "HISTFILE=", 9))
             env << QByteArray(*e);
-    env << "TERM=xterm" << "PS1=\\w # ";
+    // History in tmpfs, not ~/.ash_history on the root filesystem (see PLAN.md footprint).
+    env << "TERM=xterm" << "PS1=\\w # " << "HISTFILE=" KT_HISTFILE;
     QVector<char*> envp;
     for (QByteArray &e : env)
         envp << e.data();
@@ -144,7 +145,25 @@ bool KtTerm::start() {
     fcntl(master, F_SETFD, FD_CLOEXEC);
     notifier = new QSocketNotifier(master, QSocketNotifier::Read, this);
     connect(notifier, &QSocketNotifier::activated, this, &KtTerm::readPty);
+    // A background job keeps the PTY open after the shell exits, so EOF alone
+    // can't detect `exit`. Poll the shell's status while the terminal is open.
+    // ECHILD covers Nickel ignoring SIGCHLD (children are auto-reaped then).
+    connect(&reaper, &QTimer::timeout, this, [this]() {
+        pid_t r = waitpid(child, nullptr, WNOHANG);
+        if (r == child || (r < 0 && errno == ECHILD))
+            shellExited();
+    });
+    reaper.start(1000);
     return true;
+}
+
+void KtTerm::shellExited() {
+    reaper.stop();
+    if (notifier)
+        notifier->setEnabled(false);
+    if (exitTarget)
+        QMetaObject::invokeMethod(exitTarget, "reject", Qt::QueuedConnection);
+    exitTarget = nullptr; // once
 }
 
 void KtTerm::send(QByteArray const& b) {
@@ -169,10 +188,8 @@ void KtTerm::readPty() {
         }
         if (n < 0 && (errno == EAGAIN || errno == EINTR))
             break;
-        // EIO/EOF: the shell exited and closed the slave side.
-        notifier->setEnabled(false);
-        if (exitTarget)
-            QMetaObject::invokeMethod(exitTarget, "reject", Qt::QueuedConnection);
+        // EIO/EOF: every process closed the slave side.
+        shellExited();
         break;
     }
     if (!flush.isActive())

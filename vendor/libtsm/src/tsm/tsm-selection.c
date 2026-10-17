@@ -58,27 +58,30 @@
 #include "libtsm.h"
 #include "libtsm-int.h"
 #include "shl-llog.h"
+#include "shl_dlist.h"
 
 #define LLOG_SUBSYSTEM "tsm-selection"
 
 static void selection_set(struct tsm_screen *con, struct selection_pos *sel,
 			  unsigned int x, unsigned int y)
 {
-	struct line *pos;
-
-	sel->line = NULL;
-	pos = con->sb_pos;
-
-	while (y && pos) {
-		--y;
-		pos = pos->next;
-	}
-
-	if (pos)
-		sel->line = pos;
+	struct line *line;
 
 	sel->x = x;
-	sel->y = y;
+
+	if (!con->sb.pos) {
+		sel->line = con->lines[y];
+		return;
+	}
+	if (con->sb.pos_num + y >= con->sb.count) {
+		y -= con->sb.count - con->sb.pos_num;
+		sel->line = con->lines[y];
+		return;
+	}
+	line = con->sb.pos;
+	while (y--)
+		line = shl_dlist_next(line, &con->sb.list, list);
+	sel->line = line;
 }
 
 static void word_select(struct tsm_screen *con,
@@ -90,10 +93,7 @@ static void word_select(struct tsm_screen *con,
 
 	selection_set(con, &con->sel_start, posx, posy);
 
-	if (con->sel_start.line)
-		line = con->sel_start.line;
-	else
-	 	line = con->lines[con->sel_start.y];
+	line = con->sel_start.line;
 
 	if (!line || line->cells[posx].ch == ' ')
 		return;
@@ -115,7 +115,8 @@ static void word_select(struct tsm_screen *con,
 		}
 	}
 	con->sel_start.x = start;
-	selection_set(con, &con->sel_end, end, posy);
+	con->sel_end.x = end;
+	con->sel_end.line = line;
 	con->sel_active = true;
 }
 
@@ -130,6 +131,76 @@ void tsm_screen_selection_reset(struct tsm_screen *con)
 	con->age = con->age_cnt;
 
 	con->sel_active = false;
+	con->sel_start.line = NULL;
+	con->sel_end.line = NULL;
+}
+
+/* calculates the line length from the beginning to the last non zero character */
+static unsigned int calc_line_len(struct line *line)
+{
+	int i;
+
+	for (i = line->size - 1; i >= 0; i--)
+		if (line->cells[i].ch != 0)
+			return i + 1;
+	return 0;
+}
+
+/* TODO: tsm_ucs4_to_utf8 expects UCS4 characters, but a cell contains a
+ * tsm-symbol (which can contain multiple UCS4 chars). Fix this when introducing
+ * support for combining characters. */
+static unsigned int copy_line(struct tsm_screen *con, struct line *line, char *buf)
+{
+	unsigned int i, start, end;
+	char *pos = buf;
+	int line_len;
+
+	line_len = calc_line_len(line);
+	start = (con->sel_start.line == line) ? con->sel_start.x : 0;
+	end = (con->sel_end.line == line) ? con->sel_end.x + 1 : con->size_x;
+
+	if (start > line_len)
+		return 0;
+
+	if (end > line_len)
+		end = line_len;
+
+	for (i = start; i < end; i++) {
+		if (line->cells[i].ch)
+			pos += tsm_ucs4_to_utf8(line->cells[i].ch, pos);
+		else
+			pos += tsm_ucs4_to_utf8(' ', pos);
+	}
+	pos += tsm_ucs4_to_utf8('\n', pos);
+	return pos - buf;
+}
+
+/*
+ * Returns true if a is before b in terminal order
+ */
+static bool selection_is_before(struct tsm_screen *con, struct selection_pos *a, struct selection_pos *b)
+{
+	int i;
+
+	if (a->line == b->line)
+		return (a->x < b->x);
+
+	if (is_in_scrollback(a) != is_in_scrollback(b))
+		return (is_in_scrollback(a));
+
+	if (is_in_scrollback(a) && is_in_scrollback(b))
+		return (a->line->sb_id < b->line->sb_id);
+
+	/* so both are not in scroll back buffer and are not on the same line */
+	for (i = 0; i < con->size_y; i++) {
+		if (con->lines[i] == b->line)
+			return false;
+
+		if (con->lines[i] == a->line)
+			return true;
+	}
+	// Should not happen
+	return true;
 }
 
 SHL_EXPORT
@@ -137,7 +208,7 @@ void tsm_screen_selection_start(struct tsm_screen *con,
 				unsigned int posx,
 				unsigned int posy)
 {
-	if (!con)
+	if (!con || posx >= con->size_x || posy >= con->size_y)
 		return;
 
 	screen_inc_age(con);
@@ -145,8 +216,9 @@ void tsm_screen_selection_start(struct tsm_screen *con,
 	con->age = con->age_cnt;
 
 	con->sel_active = true;
-	selection_set(con, &con->sel_start, posx, posy);
-	memcpy(&con->sel_end, &con->sel_start, sizeof(con->sel_end));
+	selection_set(con, &con->sel_begin, posx, posy);
+	con->sel_start = con->sel_begin;
+	con->sel_end = con->sel_begin;
 }
 
 SHL_EXPORT
@@ -154,14 +226,23 @@ void tsm_screen_selection_target(struct tsm_screen *con,
 				 unsigned int posx,
 				 unsigned int posy)
 {
-	if (!con || !con->sel_active)
+	struct selection_pos target;
+
+	if (!con || !con->sel_active || posx >= con->size_x || posy >= con->size_y)
 		return;
 
 	screen_inc_age(con);
 	/* TODO: more sophisticated ageing */
 	con->age = con->age_cnt;
 
-	selection_set(con, &con->sel_end, posx, posy);
+	selection_set(con, &target, posx, posy);
+	if (selection_is_before(con, &con->sel_begin, &target)) {
+		con->sel_start = con->sel_begin;
+		con->sel_end = target;
+	} else {
+		con->sel_start = target;
+		con->sel_end = con->sel_begin;
+	}
 }
 
 SHL_EXPORT
@@ -169,7 +250,7 @@ void tsm_screen_selection_word(struct tsm_screen *con,
 			       unsigned int posx,
 			       unsigned int posy)
 {
-	if (!con)
+	if (!con || posx >= con->size_x || posy >= con->size_y)
 		return;
 
 	screen_inc_age(con);
@@ -179,220 +260,55 @@ void tsm_screen_selection_word(struct tsm_screen *con,
 	word_select(con, posx, posy);
 }
 
-/* calculates the line length from the beginning to the last non zero character */
-static unsigned int calc_line_len(struct line *line)
+/*
+ * Get the index of a line in the screen
+ *
+ * If the line is in the scroll back buffer, return 0
+ * Otherwise, return the index of the line in the screen
+ */
+static unsigned int get_line_index(struct tsm_screen *con, struct line *line)
 {
-	unsigned int line_len = 0;
-	int i;
+	unsigned int i = 0;
 
-	for (i = 0; i < line->size; i++) {
-		if (line->cells[i].ch != 0) {
-			line_len = i + 1;
-		}
-	}
-
-	return line_len;
-}
-
-/* TODO: tsm_ucs4_to_utf8 expects UCS4 characters, but a cell contains a
- * tsm-symbol (which can contain multiple UCS4 chars). Fix this when introducing
- * support for combining characters. */
-static unsigned int copy_line(struct line *line, char *buf,
-			      unsigned int start, unsigned int len)
-{
-	unsigned int i, end;
-	char *pos = buf;
-	int line_len;
-
-	line_len = calc_line_len(line);
-	if (start > line_len) {
+	if (line->sb_id)
 		return 0;
+
+	for (i = 0; i < con->size_y; i++) {
+		if (con->lines[i] == line)
+			return i;
 	}
-
-	end = start + len;
-
-	if (end > line_len) {
-		end = line_len;
-	}
-
-	for (i = start; i < line->size && i < end; ++i) {
-		if (i < line->size || !line->cells[i].ch)
-			pos += tsm_ucs4_to_utf8(line->cells[i].ch, pos);
-		else
-			pos += tsm_ucs4_to_utf8(' ', pos);
-	}
-
-	pos += tsm_ucs4_to_utf8('\n', pos);
-
-	return pos - buf;
+	return 0;
 }
 
-static void swap_selections(struct selection_pos **a, struct selection_pos **b)
+static struct line *get_next_line(struct tsm_screen *con, struct line *line, unsigned int *index)
 {
-	struct selection_pos *c;
+	struct line *next;
 
-	c  = *a;
-	*a = *b;
-	*b = c;
+	if (line->sb_id) {
+		next = shl_dlist_next(line, &con->sb.list, list);
+		if (next)
+			return next;
+		*index = 0;
+		return con->lines[0];
+	} else if (*index < con->size_y - 1) {
+		(*index)++;
+		return con->lines[*index];
+	}
+	return NULL;
 }
 
-/*
- * Normalize a selection
- *
- * Start must always point to the top left and end to the bottom right cell
- */
-static void norm_selection(struct tsm_screen *con, struct selection_pos **start, struct selection_pos **end)
+static int selection_count_lines(struct tsm_screen *con, struct selection_pos *start, struct selection_pos *end)
 {
+	int count = 1;
+	unsigned int index = get_line_index(con, start->line);
 	struct line *iter;
-
-	if ((*end)->line == NULL && (*end)->y == SELECTION_TOP) {
-		swap_selections(start, end);
-
-		return;
-	}
-
-	if ((*start)->line && (*end)->line) {
-		/* single line selection */
-		if ((*start)->line == (*end)->line) {
-			if ((*start)->x > (*end)->x) {
-				swap_selections(start, end);
-			}
-
-			return;
-		}
-
-		/*
-		 * multi line selection
-		 *
-		 * search from end->line to con->sb_last
-		 * if we find start->line on the way we
-		 * need to change start and end
-		*/
-		iter = (*end)->line;
-		while (iter && iter != con->sb_last) {
-			if (iter == (*start)->line) {
-				swap_selections(start, end);
-			}
-
-			iter = iter->next;
-		}
-
-		return;
-	}
-
-	/* end is in scroll back buffer and start on screen */
-	if (!(*start)->line && (*end)->line) {
-		swap_selections(start, end);
-		return;
-	}
-
-	/* reorder one-line selection if selection was created right to left */
-	if ((*start)->y == (*end)->y) {
-		if ((*start)->x > (*end)->x) {
-			swap_selections(start, end);
-		}
-
-		return;
-	}
-
-	/* reorder multi-line selection if selection was created bottom to top */
-	if ((*start)->y > (*end)->y) {
-		swap_selections(start, end);
-	}
-}
-
-/*
- * Counts the lines a normalized selection selects on the scroll back buffer
- *
- * Does not count the lines selected on the screen
- */
-static int selection_count_lines_sb(struct tsm_screen *con, struct selection_pos *start, struct selection_pos *end)
-{
-	struct line *iter;
-	int count = 0;
-
-	/* Single line selection */
-	if (start->line && (start->line == end->line)) {
-		return 1;
-	}
 
 	iter = start->line;
-	while (iter) {
+	while (iter && iter != end->line) {
 		count++;
-
-		if (iter == con->sb_last) {
-			break;
-		}
-
-		iter = iter->next;
+		iter = get_next_line(con, iter, &index);
 	}
-
 	return count;
-}
-
-/*
- * Counts the lines a normalized selection selects on the screen
- *
- * Does not count the lines selected in the scroll back buffer
- */
-static int selection_count_lines(struct selection_pos *start, struct selection_pos *end)
-{
-	/* Selection only spans lines of the scroll back buffer */
-	if (start->line && end->line) {
-		return 0;
-	}
-
-	return end->y - start->y + 1;
-}
-
-/*
- * Calculate the number of selected cells in a line
- */
-static int calc_selection_line_len_sb(struct tsm_screen *con, struct selection_pos *start, struct selection_pos *end, struct line *line)
-{
-	/* one-line selection */
-	if (start->line == end->line) {
-		return end->x - start->x + 1;
-	}
-
-	/* first line of a multi-line selection */
-	if (line == start->line) {
-		return con->size_x - start->x;
-	}
-
-	/* last line of a multi-line selection */
-	if (line == end->line) {
-		return end->x + 1;
-	}
-
-	/* every other selection */
-	return con->size_x;
-}
-
-/*
- * Calculate the number of selected cells in a line
- */
-static int calc_selection_line_len(struct tsm_screen *con, struct selection_pos *start, struct selection_pos *end, int line_num)
-{
-	if (!start->line) {
-		/* one-line selection */
-		if (start->y == end->y) {
-			return end->x - start->x + 1;
-		}
-
-		/* first line of a multi-line selection */
-		if (line_num == start->y) {
-			return con->size_x - start->x;
-		}
-	}
-
-	/* last line of a multi-line selection */
-	if (line_num == end->y) {
-		return end->x + 1;
-	}
-
-	/* every other selection */
-	return con->size_x;
 }
 
 /*
@@ -404,69 +320,26 @@ static unsigned int calc_line_copy_buffer(struct tsm_screen *con, unsigned int n
 	return con->size_x * num_lines * 4 + 1;
 }
 
-/*
- * Copy all selected lines from the scroll back buffer
- */
-static int copy_lines_sb(struct tsm_screen *con, struct selection_pos *start, struct selection_pos *end, char *buf, int pos)
+static int copy_lines(struct tsm_screen *con, struct selection_pos *start, struct selection_pos *end, char *buf, int pos)
 {
+	unsigned int index = get_line_index(con, start->line);
 	struct line *iter;
-	int line_x, line_len;
-
-	if (!start->line) {
-		return pos;
-	}
 
 	iter = start->line;
 	while (iter) {
-		line_x = 0;
-		if (iter == start->line) {
-			line_x = start->x;
-		}
-
-		line_len = calc_selection_line_len_sb(con, start, end, iter);
-		pos += copy_line(iter, &(buf[pos]), line_x, line_len);
-
-		if (iter == con->sb_last || iter == end->line) {
+		pos += copy_line(con, iter, &(buf[pos]));
+		if (iter == end->line)
 			break;
-		}
-
-		iter = iter->next;
+		iter = get_next_line(con, iter, &index);
 	}
-
-	return pos;
-}
-
-/*
- * Copy all selected lines from the regular screen
- */
-static int copy_lines(struct tsm_screen *con, struct selection_pos *start, struct selection_pos *end, char *buf, int pos)
-{
-	int line_len, line_x, i;
-
-	/* selection is scroll back buffer only */
-	if (end->line) {
-		return pos;
-	}
-
-	for (i = start->y; i <= end->y; i++) {
-		line_len = calc_selection_line_len(con, start, end, i);
-
-		line_x = 0;
-		if (!start->line && i == start->y) {
-			line_x = start->x;
-		}
-
-		pos += copy_line(con->lines[i], &(buf[pos]), line_x, line_len);
-	}
-
 	return pos;
 }
 
 SHL_EXPORT
 int tsm_screen_selection_copy(struct tsm_screen *con, char **out)
 {
-	struct selection_pos *start, *end;
-	struct selection_pos start_copy, end_copy;
+	struct selection_pos *start = &con->sel_start;
+	struct selection_pos *end = &con->sel_end;
 	int buf_size = 0;
 	int pos = 0;
 	int total_lines;
@@ -479,36 +352,21 @@ int tsm_screen_selection_copy(struct tsm_screen *con, char **out)
 		return -ENOENT;
 	}
 
-	/*
-	 * copy the selection start and end so we can modify it without affecting
-	 * the screen in any way
-	 */
-	memcpy(&start_copy, &con->sel_start, sizeof(con->sel_start));
-	memcpy(&end_copy, &con->sel_end, sizeof(con->sel_end));
-	start = &start_copy;
-	end   = &end_copy;
-
 	/* invalid selection */
-	if (start->y == SELECTION_TOP && start->line == NULL &&
-		end->y == SELECTION_TOP && end->line == NULL) {
+	if (start->line == NULL && end->line == NULL) {
 		*out = strdup("");
 		return 0;
 	}
 
-	norm_selection(con, &start, &end);
-
-	if (start->line == NULL && start->y == SELECTION_TOP) {
-		if (con->sb_first != NULL) {
-			start->line = con->sb_first;
-			start->x = 0;
-		} else {
-			start->y = 0;
-			start->x = 0;
-		}
+	if (start->line == NULL) {
+		if (!shl_dlist_empty(&con->sb.list))
+			start->line = shl_dlist_first(&con->sb.list, struct line, list);
+		else
+			start->line = con->lines[0];
+		start->x = 0;
 	}
 
-	total_lines =  selection_count_lines_sb(con, start, end);
-	total_lines += selection_count_lines(start, end);
+	total_lines =  selection_count_lines(con, start, end);
 	buf_size = calc_line_copy_buffer(con, total_lines);
 
 	*out = calloc(buf_size, 1);
@@ -516,7 +374,6 @@ int tsm_screen_selection_copy(struct tsm_screen *con, char **out)
 		return -ENOMEM;
 	}
 
-	pos = copy_lines_sb(con, start, end, *out, pos);
 	pos = copy_lines(con, start, end, *out, pos);
 
 	/* remove last line break */

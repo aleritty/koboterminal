@@ -16,7 +16,7 @@ Goal: NickelMenu entry opens a native terminal-like dialog inside Nickel.
 
 ## Architecture
 
-```
+```text
 NickelMenu "Terminal"
   cmd_output: echo > /tmp/koboterminal.fifo      (fails fast if plugin missing)
         |
@@ -34,8 +34,34 @@ Typed characters go straight to the PTY (the field keeps a sentinel space so
 backspace is detectable). Closing kills the shell's whole session.
 
 Install = one `KoboRoot.tgz`: the `.so` plus `/mnt/onboard/.adds/nm/koboterminal`
-(NickelMenu reads every file in `.adds/nm/`). Uninstall = delete that menu
-file and reboot (`uninstall_xflag`), or create `/mnt/onboard/koboterminal_uninstall`.
+(NickelMenu reads every file in `.adds/nm/`).
+
+Uninstall is triggered by `/mnt/onboard/koboterminal_uninstall` existing
+(`uninstall_flag`) or the menu file missing (`uninstall_xflag`). NickelHook then
+deletes the library and the flag and calls `kt_uninstall()`, which removes
+everything else in the footprint below. `KoboRoot-uninstall.tgz` ships the
+library plus the flag, so the cleanup runs even if the installed library is
+missing or broken.
+
+## Footprint (keep up to date)
+
+Every path the mod can create on the device. **Adding a new one means updating
+all three places:** `kt_uninstall()` in `src/koboterminal.cc`, the manual
+`rm` commands in README "Uninstall", and this table.
+
+| Path | Created by | Removed by |
+| --- | --- | --- |
+| `/usr/local/Kobo/imageformats/libkoboterminal.so` (+ `.failsafe` during init) | KoboRoot.tgz | NickelHook |
+| `/mnt/onboard/.adds/nm/koboterminal` | KoboRoot.tgz | `kt_uninstall` |
+| `/mnt/onboard/koboterminal_uninstall` | KoboRoot-uninstall.tgz / user | NickelHook |
+| `/tmp/koboterminal.fifo` | `kt_init` (tmpfs, also gone on reboot) | `kt_uninstall` |
+| `/tmp/koboterminal_history` | shell history (`HISTFILE`, tmpfs) | `kt_uninstall` |
+| `/mnt/onboard/.kobo/KoboTerminal_*.log` | NickelHook `nh_dump_log` on failed init | `kt_uninstall` |
+| `/mnt/onboard/.adds/koboterminal/` | earlier dev builds (legacy) | `kt_uninstall` |
+| `# BEGIN/END KOBOTERMINAL` block in `/mnt/onboard/.adds/nm/menu` | earlier dev builds (legacy) | `kt_uninstall` |
+
+The shell itself may create files (history, user files); those belong to the
+user and are not tracked.
 
 ## Phases
 
@@ -43,6 +69,7 @@ file and reboot (`uninstall_xflag`), or create `/mnt/onboard/koboterminal_uninst
 2. Terminal dialog: keyboard field runs commands in persistent `sh`, output shown.
 3. UI: monospace, sizing, e-ink-friendly look.
 4. Real PTY + libtsm terminal emulation (vi/top/less, ^C, job control).
+5. Full uninstall (`kt_uninstall`, `KoboRoot-uninstall.tgz`), CI on GitHub and GitLab.
 
 ## Verify on device
 

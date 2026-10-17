@@ -1,2 +1,3 @@
-libtsm 6ef38081955dce12ed4b13dd74db91bb9d4e4cb1 from https://github.com/Aetf/libtsm
-Local change: libtsm-int.h SHL_EXPORT is overridable (we build with -DSHL_EXPORT= to keep tsm_* private inside Nickel).
+libtsm v4.8.0 (ef2365d) from https://github.com/kmscon/libtsm
+Only the files needed to build are kept (src/tsm, part of src/shared, external/wcwidth, xkbcommon keysyms).
+Local change: SHL_EXPORT in src/tsm/libtsm-int.h is overridable; we build with -DSHL_EXPORT= so tsm_* stay private inside Nickel.

@@ -9,6 +9,8 @@
 #include <QTimer>
 #include <QWidget>
 
+#define KT_HISTFILE "/tmp/koboterminal_history"
+
 class QSocketNotifier;
 struct tsm_screen;
 struct tsm_vte;
@@ -38,11 +40,13 @@ private:
     pid_t child = 0;
     QSocketNotifier *notifier = nullptr;
     QTimer flush;           // coalesces repaints (e-ink)
+    QTimer reaper;          // notices the shell exiting
     uint32_t lastAge = 0;   // tsm age at the last repaint
     QFont font, bold;
     int cw, ch;             // cell size in pixels
 
     void readPty();
+    void shellExited();
     void repaintDirty();
 };
 

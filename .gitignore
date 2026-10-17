@@ -1,18 +1,13 @@
-# make gitignore
-.kdev4/
-*.kdev4
-.kateconfig
+# Build output (`make clean` removes it)
+*.o
+*.moc
+/NickelHook/nhplugin.json
+/src/libkoboterminal.so
+/KoboRoot.tgz
+
+# Editor / tooling
+compile_commands.json
+.cache/
 .vscode/
 .idea/
-.clangd/
-.cache/
-compile_commands.json
-/KoboRoot.tgz
-/src/libkoboterminal.so
-/src/koboterminal.o
-/.nickeltc-home/
-/NickelHook/nhplugin.json
-/NickelHook/*.o
-/NickelHook/*.moc
-/dist/
-*.o
+/KoboRoot-uninstall.tgz

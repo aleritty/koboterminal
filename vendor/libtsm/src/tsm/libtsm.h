@@ -170,6 +170,42 @@ struct tsm_screen_attr {
 	unsigned int inverse : 1;	/* inverse colors */
 	unsigned int protect : 1;	/* cannot be erased */
 	unsigned int blink : 1;		/* blinking character */
+	unsigned int dim:1;		/* dim color */
+};
+
+/* Attributes that alter the glyph shape */
+typedef union{
+	struct {
+		uint8_t bold      : 1;
+		uint8_t italic    : 1;
+		uint8_t underline : 1;
+		uint8_t blink     : 1;
+		uint8_t reserved  : 4;
+	};
+	uint8_t u8;
+} tsm_screen_attr2_t;
+
+struct tsm_screen_color {
+	uint8_t r; /* red */
+	uint8_t g; /* green */
+	uint8_t b; /* blue */
+};
+
+struct tsm_screen_cell {
+	uint32_t ch;                  /* character */
+	struct tsm_screen_color fg;   /* foreground color */
+	struct tsm_screen_color bg;   /* background color */
+	tsm_screen_attr2_t attr2;     /* glyph attributes */
+};
+
+enum tsm_screen_cursor_style {
+	TSM_SCREEN_CURSOR_DEFAULT		= 0,
+	TSM_SCREEN_CURSOR_BLOCK_BLINK		= 1,
+	TSM_SCREEN_CURSOR_BLOCK_STEADY		= 2,
+	TSM_SCREEN_CURSOR_UNDERLINE_BLINK	= 3,
+	TSM_SCREEN_CURSOR_UNDERLINE_STEADY	= 4,
+	TSM_SCREEN_CURSOR_VBAR_BLINK		= 5,
+	TSM_SCREEN_CURSOR_VBAR_STEADY		= 6,
 };
 
 typedef int (*tsm_screen_draw_cb) (struct tsm_screen *con,
@@ -267,6 +303,14 @@ int tsm_screen_selection_copy(struct tsm_screen *con, char **out);
 
 tsm_age_t tsm_screen_draw(struct tsm_screen *con, tsm_screen_draw_cb draw_cb,
 			  void *data);
+
+const struct tsm_screen_cell *tsm_screen_draw2(struct tsm_screen *con);
+
+enum tsm_screen_cursor_style tsm_screen_get_cursor_style(struct tsm_screen *con);
+void tsm_screen_set_cursor_style(struct tsm_screen *con, enum tsm_screen_cursor_style type);
+
+uint32_t tsm_screen_get_cursor_blinking_rate_ms(struct tsm_screen *con);
+void tsm_screen_set_cursor_blinking_rate_ms(struct tsm_screen *con, uint32_t ms);
 
 /** @} */
 
@@ -373,10 +417,12 @@ enum tsm_vte_color {
 
 /* control sequence codes sent be the application */
 #define TSM_VTE_MOUSE_MODE_X10      9 /* legacy mode (only cell mode, only on mouse click and x and y can be 223 max) */
+#define TSM_VTE_MOUSE_MODE_VT200 1000 /* normal tracking mode (sends mouse position both on button press and release) */
 #define TSM_VTE_MOUSE_EVENT_BTN  1002 /* sends position on mouse click only */
 #define TSM_VTE_MOUSE_EVENT_ANY  1003 /* sends position on mouse click and mouse move */
 #define TSM_VTE_MOUSE_MODE_SGR   1006 /* modern mode that allows unlimited x and y coordinates */
 #define TSM_VTE_MOUSE_MODE_PIXEL 1016 /* sends pixel coordinates instead of cell coordinates */
+#define TSM_VTE_BRACKETED_PASTE  2004 /* enclose paste data with escape characters */
 
 enum tsm_mouse_track_mode {
 	TSM_MOUSE_TRACK_DISABLE = 0, /* don't track mouse events */
@@ -416,6 +462,19 @@ typedef void (*tsm_vte_mouse_cb) (struct tsm_vte *vte,
 				  bool track_pixels,
 				  void *data);
 
+typedef void (*tsm_vte_bell_cb) (struct tsm_vte *vte,
+				 void *data);
+
+enum tsm_vte_led {
+	TSM_VTE_LED_SCROLL_LOCK = (1 << 0),
+	TSM_VTE_LED_NUM_LOCK    = (1 << 1),
+	TSM_VTE_LED_CAPS_LOCK   = (1 << 2),
+};
+
+typedef void (*tsm_vte_led_cb) (struct tsm_vte *vte,
+				unsigned int leds,
+				void *data);
+
 int tsm_vte_new(struct tsm_vte **out, struct tsm_screen *con,
 		tsm_vte_write_cb write_cb, void *data,
 		tsm_log_t log, void *log_data);
@@ -424,6 +483,8 @@ void tsm_vte_unref(struct tsm_vte *vte);
 
 void tsm_vte_set_osc_cb(struct tsm_vte *vte, tsm_vte_osc_cb osc_cb, void *osc_data);
 void tsm_vte_set_mouse_cb(struct tsm_vte *vte, tsm_vte_mouse_cb mouse_cb, void *mouse_data);
+void tsm_vte_set_bell_cb(struct tsm_vte *vte, tsm_vte_bell_cb bell_cb, void *bell_data);
+void tsm_vte_set_led_cb(struct tsm_vte *vte, tsm_vte_led_cb led_cb, void *led_data);
 
 /**
  * @brief Set color palette to one of the predefined palette on the vte object.
@@ -520,6 +581,7 @@ bool tsm_vte_handle_mouse(struct tsm_vte *vte, unsigned int cell_x,
         unsigned int cell_y, unsigned int pixel_x, unsigned int pixel_y,
         unsigned int button, unsigned int event, unsigned char flags);
 
+void tsm_vte_paste(struct tsm_vte *vte, const char *data);
 /** @} */
 
 #ifdef __cplusplus

@@ -30,7 +30,6 @@
  * yourself.
  */
 
-#include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -38,6 +37,7 @@
 #include "libtsm.h"
 #include "libtsm-int.h"
 #include "shl-llog.h"
+#include "shl_dlist.h"
 
 #define LLOG_SUBSYSTEM "tsm-render"
 
@@ -47,7 +47,7 @@ tsm_age_t tsm_screen_draw(struct tsm_screen *con, tsm_screen_draw_cb draw_cb,
 {
 	unsigned int cur_x, cur_y;
 	unsigned int i, j, k;
-	struct line *iter, *line = NULL;
+	struct line *line, *next_line = NULL;
 	struct cell *cell, empty;
 	struct tsm_screen_attr attr;
 	int ret, warned = 0;
@@ -71,47 +71,41 @@ tsm_age_t tsm_screen_draw(struct tsm_screen *con, tsm_screen_draw_cb draw_cb,
 		cur_y = con->size_y - 1;
 
 	/* push each character into rendering pipeline */
-
-	iter = con->sb_pos;
 	k = 0;
+	next_line = con->sb.pos;
 
 	if (con->sel_active) {
-		if (!con->sel_start.line && con->sel_start.y == SELECTION_TOP)
+		if (!con->sel_start.line)
 			in_sel = !in_sel;
-		if (!con->sel_end.line && con->sel_end.y == SELECTION_TOP)
+		if (!con->sel_end.line)
 			in_sel = !in_sel;
 
-		if (con->sel_start.line &&
-		    (!iter || con->sel_start.line->sb_id < iter->sb_id))
+		if (is_in_scrollback(&con->sel_start) &&
+		    (!con->sb.pos || con->sel_start.line->sb_id < con->sb.pos->sb_id))
 			in_sel = !in_sel;
-		if (con->sel_end.line &&
-		    (!iter || con->sel_end.line->sb_id < iter->sb_id))
+		if (is_in_scrollback(&con->sel_end) &&
+		    (!con->sb.pos || con->sel_end.line->sb_id < con->sb.pos->sb_id))
 			in_sel = !in_sel;
 	}
 
 	for (i = 0; i < con->size_y; ++i) {
-		if (iter) {
-			line = iter;
-			iter = iter->next;
+		if (next_line) {
+			line = next_line;
+			next_line = shl_dlist_next(next_line, &con->sb.list, list);
 		} else {
 			line = con->lines[k];
 			k++;
 		}
 
 		if (con->sel_active) {
-			if (con->sel_start.line == line ||
-			    (!con->sel_start.line &&
-			     con->sel_start.y == k - 1))
+			if (con->sel_start.line == line)
 				sel_start = true;
 			else
 				sel_start = false;
-			if (con->sel_end.line == line ||
-			    (!con->sel_end.line &&
-			     con->sel_end.y == k - 1))
+			if (con->sel_end.line == line)
 				sel_end = true;
 			else
 				sel_end = false;
-
 			was_sel = false;
 		}
 
@@ -197,4 +191,115 @@ tsm_age_t tsm_screen_draw(struct tsm_screen *con, tsm_screen_draw_cb draw_cb,
 	} else {
 		return con->age_cnt;
 	}
+}
+
+static void color_dim(struct tsm_screen_color  *out, const struct tsm_screen_color *fg, const struct tsm_screen_color *bg)
+{
+	out->r = bg->r / 2 + fg->r / 2;
+	out->g = bg->g / 2 + fg->g / 2;
+	out->b = bg->b / 2 + fg->b / 2;
+}
+
+/*
+ * tsm_screen_draw2 returns a pointer to a table of tsm_screen_cell, one for each cell on the screen.
+ * It uses a bit more memory, but should be much faster, as each cell is only 12 bytes.
+ * The caller can read the table, until the next call to tsm_screen_draw2, or until con is destroyed.
+ */
+SHL_EXPORT
+const struct tsm_screen_cell *tsm_screen_draw2(struct tsm_screen *con)
+{
+	unsigned int i, j, k;
+	struct line *line, *next_line = NULL;
+	struct cell *cell, empty;
+	struct tsm_screen_cell *out;
+	bool in_sel = false, sel_start = false, sel_end = false;
+	bool inverse = false;
+
+	if (!con)
+		return NULL;
+
+	if (con->cells_count < con->size_x * con->size_y) {
+		free(con->cells);
+		con->cells_count = 0;
+		con->cells = malloc(con->size_x * con->size_y * sizeof(struct tsm_screen_cell));
+		if (!con->cells)
+			return NULL;
+		con->cells_count = con->size_x * con->size_y;
+		memset(con->cells, 0, con->cells_count * sizeof(struct tsm_screen_cell));
+	}
+
+	screen_cell_init(con, &empty);
+
+	/* push each character into rendering pipeline */
+	k = 0;
+	next_line = con->sb.pos;
+
+	if (con->sel_active) {
+		if (!con->sel_start.line && con->sel_end.line)
+			in_sel = true;
+
+		if (is_in_scrollback(&con->sel_start)
+			&& (!con->sb.pos || con->sel_start.line->sb_id < con->sb.pos->sb_id))
+			in_sel = !in_sel;
+		if (is_in_scrollback(&con->sel_end)
+			&& (!con->sb.pos || con->sel_end.line->sb_id < con->sb.pos->sb_id))
+			in_sel = !in_sel;
+	}
+
+	for (i = 0; i < con->size_y; ++i) {
+		if (next_line) {
+			line = next_line;
+			next_line = shl_dlist_next(next_line, &con->sb.list, list);
+		} else {
+			line = con->lines[k];
+			k++;
+		}
+
+		if (con->sel_active) {
+			sel_start = (con->sel_start.line == line);
+			sel_end = (con->sel_end.line == line);
+		}
+
+		for (j = 0; j < con->size_x; ++j) {
+			out = &con->cells[i * con->size_x + j];
+			/* don't handle multiple codepoints yet */
+			if (j < line->size && line->cells[j].ch <= TSM_UCS4_MAX)
+				cell = &line->cells[j];
+			else
+				cell = &empty;
+			out->ch = cell->ch ? cell->ch : ' ';
+			out->attr2.bold = cell->attr.bold;
+			out->attr2.italic = cell->attr.italic;
+			out->attr2.underline = cell->attr.underline;
+			out->attr2.blink = cell->attr.blink;
+
+			if (sel_start && j == con->sel_start.x)
+				in_sel = !in_sel;
+
+			/* Inverse logic, cell attribute, selection, and whole screen inverse */
+			inverse = cell->attr.inverse ^ in_sel ^ (con->flags & TSM_SCREEN_INVERSE);
+
+			if (inverse) {
+				out->fg.r = cell->attr.br;
+				out->fg.g = cell->attr.bg;
+				out->fg.b = cell->attr.bb;
+				out->bg.r = cell->attr.fr;
+				out->bg.g = cell->attr.fg;
+				out->bg.b = cell->attr.fb;
+			} else {
+				out->fg.r = cell->attr.fr;
+				out->fg.g = cell->attr.fg;
+				out->fg.b = cell->attr.fb;
+				out->bg.r = cell->attr.br;
+				out->bg.g = cell->attr.bg;
+				out->bg.b = cell->attr.bb;
+			}
+			if (cell->attr.dim)
+				color_dim(&out->fg, &out->fg, &out->bg);
+
+			if (sel_end && j == con->sel_end.x)
+				in_sel = !in_sel;
+		}
+	}
+	return con->cells;
 }
