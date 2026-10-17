@@ -131,15 +131,13 @@ protected:
         case QEvent::MouseButtonPress:
             if (logged++ < 4)
                 nh_log("key input event %d", e->type());
-            setDown(true);
-            e->accept();
+            e->accept(); // no pressed look: it costs two e-ink refreshes per tap
             return true;
         case QEvent::TouchEnd:
         case QEvent::MouseButtonRelease: {
             QPoint pos = e->type() == QEvent::TouchEnd && !static_cast<QTouchEvent*>(e)->touchPoints().isEmpty()
                 ? static_cast<QTouchEvent*>(e)->touchPoints().first().pos().toPoint()
                 : e->type() == QEvent::MouseButtonRelease ? static_cast<QMouseEvent*>(e)->pos() : QPoint(-1, -1);
-            setDown(false);
             if (rect().contains(pos))
                 click(); // toggles Ctrl/Alt, emits clicked()
             e->accept();
@@ -254,6 +252,15 @@ protected:
         return false;
     }
 
+public:
+    // Fit before the dialog is first shown, so it doesn't paint at a guessed
+    // size and then again at the right one.
+    void fitNow() {
+        if (d->layout())
+            d->layout()->activate();
+        fit();
+    }
+
 private:
     QDialog *d;
     KtTerm *term;
@@ -276,15 +283,17 @@ private:
         box->setContentsMargins(0, 0, 0, 0); // again: a style re-polish may restore Nickel's inset
         // Every spare pixel goes to the terminal (rows = height / cell height;
         // the remainder is blank). Nickel centres the box above the keyboard, so
-        // filling the space means box height == the keyboard's top; a box that
-        // isn't centred just grows down to it.
+        // it fills the space exactly when box height == the keyboard's top: one
+        // pass, one relayout, one e-ink refresh.
         // The keyboard is docked at the bottom: derive its top from its height. Its
         // reported position is stale right after it reappears (the box is still
         // screen-tall, so Nickel can't lay it out yet), which left the key bar
         // hidden behind it.
-        int limit = keyboard->isVisible() ? screenHeight - keyboard->height() : screenHeight;
-        int top = box->mapToGlobal(QPoint(0, 0)).y(), bottom = top + box->height();
-        int spare = qAbs(top - (limit - bottom)) <= 2 ? limit - box->height() : limit - bottom;
+        // isVisibleTo(): also right before the dialog is first shown (see fitNow).
+        if (keyboard->isVisibleTo(d) && keyboard->height() < screenHeight / 8)
+            return; // not laid out yet (before the first show): the Show event refits
+        int limit = keyboard->isVisibleTo(d) ? screenHeight - keyboard->height() : screenHeight;
+        int spare = limit - box->height();
         int h = qMax(3 * term->cellHeight(), term->height() + spare);
         if (h != term->height()) {
             term->setFixedHeight(h);
@@ -363,6 +372,7 @@ static void kt_open() {
     // in the log): a full-screen transparent dialog whose visible box 'frame'
     // is centred above the keyboard, content in 'contentContainer'. Make the box
     // screen-wide with thin margins. If the names differ, keep Nickel's layout.
+    KtFit *fitter = nullptr;
     QWidget *frame = d->findChild<QWidget*>(QStringLiteral("frame"));
     QWidget *content = d->findChild<QWidget*>(QStringLiteral("contentContainer"));
     if (frame && frame->layout() && content && content->layout()) {
@@ -375,7 +385,7 @@ static void kt_open() {
         content->setContentsMargins(0, 0, 0, 0);
         content->layout()->setContentsMargins(0, 0, 0, 0);
         content->layout()->setSpacing(2);
-        new KtFit(d, term, frame, scr.height());
+        fitter = new KtFit(d, term, frame, scr.height());
     } else {
         nh_log("dialog layout not recognised; keeping Nickel's sizes");
     }
@@ -450,6 +460,8 @@ static void kt_open() {
         d->deleteLater();
         return;
     }
+    if (fitter)
+        fitter->fitNow();
     d->setModal(true);
     d->open();
 }

@@ -6,6 +6,7 @@
 
 #include <QFont>
 #include <QPointer>
+#include <QElapsedTimer>
 #include <QTimer>
 #include <QWidget>
 
@@ -52,6 +53,7 @@ private:
     int exitPipe = -1;                       // EOF when the shell has exited
     QSocketNotifier *exitNotifier = nullptr;
     QTimer flush;           // coalesces repaints (e-ink)
+    QElapsedTimer pending;  // since the first unpainted output
     uint_fast32_t lastAge = 0; // tsm_age_t at the last repaint
     QFont font, bold;
     int cw, ch;             // cell size in pixels

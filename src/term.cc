@@ -88,7 +88,7 @@ KtTerm::KtTerm(QFont const& f, int cols, int rows, QWidget *parent) : QWidget(pa
     }, this, nullptr, nullptr);
 
     flush.setSingleShot(true);
-    flush.setInterval(150);
+    flush.setInterval(100);
     connect(&flush, &QTimer::timeout, this, &KtTerm::repaintDirty);
 }
 
@@ -318,7 +318,12 @@ void KtTerm::readPty() {
         shellExited();
         break;
     }
+    // Repaint once output has been quiet for 100 ms (a command, its output and
+    // the next prompt usually arrive in separate bursts), but never later than
+    // ~0.5 s after the first unpainted byte: one e-ink refresh instead of several.
     if (!flush.isActive())
+        pending.start();
+    if (!flush.isActive() || pending.elapsed() < 400)
         flush.start();
 }
 
