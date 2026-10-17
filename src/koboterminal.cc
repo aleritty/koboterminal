@@ -4,6 +4,8 @@
 #include <unistd.h>
 
 #include <QDialog>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPointer>
@@ -67,6 +69,15 @@ static void kt_open() {
     out->setReadOnly(true);
     out->setFocusPolicy(Qt::NoFocus);
     out->setMaximumBlockCount(1000);
+    // ponytail: sizes are screen fractions, tune on device if text is too small/big.
+    QSize scr = QGuiApplication::primaryScreen()->size();
+    QFont mono(QStringLiteral("Courier"));
+    mono.setStyleHint(QFont::TypeWriter);
+    mono.setPixelSize(scr.width() / 40); // ~40 columns wide
+    out->setFont(mono);
+    out->setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+    out->setMinimumSize(scr.width() * 9 / 10, scr.height() * 2 / 5);
+    out->setStyleSheet(QStringLiteral("QPlainTextEdit { background: white; color: black; border: 2px solid black; }"));
     ConfirmationDialog__addWidget(d, out);
 
     ConfirmationDialog__setTitle(d, QStringLiteral("KoboTerminal"));
